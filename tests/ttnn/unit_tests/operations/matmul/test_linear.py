@@ -148,7 +148,6 @@ def test_linear_with_core_grid(
         input_tensor_a,
         input_tensor_b,
         bias=bias,
-        core_grid=ttnn.CoreGrid(y=batch_size, x=6),
     )
 
     output_tensor = ttnn.to_torch(output_tensor)
@@ -184,7 +183,7 @@ def test_wide_linear_with_argument_for_core_grid_set_to_device_grid(
     input_tensor_a = ttnn.from_torch(torch_input_tensor_a, layout=ttnn.TILE_LAYOUT, device=device)
     input_tensor_b = ttnn.from_torch(torch_input_tensor_b, layout=ttnn.TILE_LAYOUT, device=device)
 
-    output_tensor = ttnn.linear(input_tensor_a, input_tensor_b, core_grid=device.core_grid, activation=activation)
+    output_tensor = ttnn.linear(input_tensor_a, input_tensor_b, activation=activation)
 
     output_tensor = ttnn.to_torch(output_tensor)
     assert_numeric_metrics(
@@ -229,7 +228,7 @@ def test_linear_with_compound_activation(device, batch_size, m_size, k_size, n_s
     input_tensor_a = ttnn.from_torch(torch_input_tensor_a, layout=ttnn.TILE_LAYOUT, device=device)
     input_tensor_b = ttnn.from_torch(torch_input_tensor_b, layout=ttnn.TILE_LAYOUT, device=device)
 
-    output_tensor = ttnn.linear(input_tensor_a, input_tensor_b, core_grid=device.core_grid, activation=activation)
+    output_tensor = ttnn.linear(input_tensor_a, input_tensor_b, activation=activation)
 
     # We supply no program config or core grid, so this uses the unfused path.
     output_tensor = ttnn.linear(input_tensor_a, input_tensor_b, activation=activation)
@@ -266,7 +265,6 @@ def test_linear_by_passing_in_1D_systolic_array_program_config(device, batch_siz
         input_tensor_a,
         input_tensor_b,
         activation=activation,
-        core_grid=device.core_grid,
     )
 
     output_tensor = ttnn.to_torch(output_tensor)
@@ -305,7 +303,6 @@ def test_linear_fp32_acc(device, m_size, k_size, n_size):
     output_tensor = ttnn.linear(
         input_tensor_a,
         input_tensor_b,
-        core_grid=device.core_grid,
         compute_kernel_config=compute_kernel_config,
     )
 
@@ -351,7 +348,6 @@ def test_bloom_ff2_linear(device):
         input_tensor,
         weights,
         bias=bias,
-        core_grid=device.core_grid,
         memory_config=ttnn.L1_MEMORY_CONFIG,
         dtype=ttnn.bfloat16,
     )
@@ -394,7 +390,6 @@ def test_linear_by_passing_in_1D_systolic_array_program_config_and_optional_outo
         input_tensor_a,
         input_tensor_b,
         activation=activation,
-        core_grid=device.core_grid,
     )
 
     output_tensor = ttnn.to_torch(output_tensor)
@@ -404,7 +399,6 @@ def test_linear_by_passing_in_1D_systolic_array_program_config_and_optional_outo
         input_tensor_b,
         activation=activation,
         optional_output_tensor=optional_output_tensor,
-        core_grid=device.core_grid,
     )
 
     optional_output_tensor = ttnn.to_torch(optional_output_tensor)
@@ -447,7 +441,6 @@ def test_linear_with_fp32_dest_acc_and_bias(device):
         input_tensor_b,
         bias=input_tensor_c,
         compute_kernel_config=compute_kernel_config,
-        core_grid=ttnn.CoreGrid(y=8, x=7),
         transpose_b=True,
     )
     output_tensor = ttnn.to_torch(output1)
@@ -851,7 +844,6 @@ def test_linear_on_subdevice(device, m_size, k_size, n_size, use_bias, transpose
             input_b,
             transpose_b=transpose_b,
             bias=bias,
-            core_grid=worker_core_grid,
             sub_device_id=worker_sub_device_id,
         )
         output = ttnn.to_torch(output)
@@ -897,7 +889,6 @@ def test_linear_on_subdevice_variable_start_row(device, m_size, k_size, n_size, 
         output = ttnn.linear(
             input_a,
             input_b,
-            core_grid=worker_core_grid,
             sub_device_id=worker_sub_device_id,
         )
         output = ttnn.to_torch(output)
@@ -956,7 +947,6 @@ def test_linear_bias_cb_estimation_with_large_n_small_k(device, batch_size, seq_
         input_b,
         bias=bias,
         transpose_b=True,
-        core_grid=device.core_grid,
         compute_kernel_config=compute_kernel_config,
     )
     output = ttnn.to_torch(output)
