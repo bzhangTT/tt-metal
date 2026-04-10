@@ -25,6 +25,6 @@ ttnn::Tensor update_cache(
     uint32_t batch_offset = 0,
     std::optional<const DeviceComputeKernelConfig> compute_kernel_config = std::nullopt);
 
-ttnn::Tensor fill_cache(const ttnn::Tensor& cache_tensor, const ttnn::Tensor& input_tensor, uint32_t batch_idx);
+ttnn::Tensor fill_cache(const ttnn::Tensor& cache_tensor, const ttnn::Tensor& input_tensor, uint32_t batch_idx, uint32_t update_idx = 0);
 
 }  // namespace ttnn
