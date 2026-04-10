@@ -1398,6 +1398,17 @@ void detail::ProgramImpl::allocate_circular_buffers(const IDevice* device) {
                 dev);
         }
         circular_buffer->set_locally_allocated_address(computed_addr);
+        circular_buffer->write_back_allocated_address(computed_addr);
+        // DEBUG: CB_ALLOC — match against blaze.l1_profile.simulate_scratch_cb_addresses()
+        for (uint8_t idx : circular_buffer->buffer_indices()) {
+            log_debug(
+                tt::LogMetal,
+                "CB_ALLOC: idx={} addr=0x{:x} size=0x{:x} core_ranges={}",
+                idx,
+                computed_addr,
+                circular_buffer->size(),
+                circular_buffer->core_ranges().str());
+        }
     }
 
     // Register program ONLY with NEW devices (prevents duplicate registration)
