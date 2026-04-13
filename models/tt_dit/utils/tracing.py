@@ -18,9 +18,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from typing import ClassVar
 
-_OMITTED = object()
-"""Sentinel for omitted positional args — distinct from ``None``, which is a valid scalar input."""
-
 
 class Tracer:
     """Wrapper for capturing and executing a trace of a given function.
@@ -150,81 +147,111 @@ class Tracer:
             logger.warning("blocking execution is not supported with multiple devices")
 
         if self._trace_ids is None:
-            if self._function is None:
-                msg = "tracer cannot be reused after the trace was released"
-                raise RuntimeError(msg)
-
-            args = _tree_map(_verify_value, args, path_label="args")
-            kwargs = _tree_map(_verify_value, kwargs, path_label="kwargs")
-            self._args = _tree_map(self._tensor_to_device, args, path_label="args")
-            self._kwargs = _tree_map(self._tensor_to_device, kwargs, path_label="kwargs")
-
-            if self._prep_run:
-                if self._clone_prep_inputs:
-                    prep_args = _tree_map(_clone_tensor, self._args, path_label="args")
-                    prep_kwargs = _tree_map(_clone_tensor, self._kwargs, path_label="kwargs")
-                else:
-                    prep_args = self._args
-                    prep_kwargs = self._kwargs
-
-                self._function(*prep_args, **prep_kwargs)
-                del prep_args, prep_kwargs
-
-            # capture trace
-            logger.debug("capturing trace...")
-            trace_ids = tuple(ttnn.begin_trace_capture(d, cq_id=tracer_cq_id) for d in self._devices)
-            try:
-                try:
-                    outputs = self._function(*self._args, **self._kwargs)
-                finally:
-                    for d, trace_id in zip(self._devices, trace_ids, strict=True):
-                        ttnn.end_trace_capture(d, trace_id, cq_id=tracer_cq_id)
-
-                outputs = _tree_map(_verify_value, outputs, path_label="outputs")
-            except Exception:
-                for d, trace_id in zip(self._devices, trace_ids, strict=True):
-                    ttnn.release_trace(d, trace_id)
-                raise
-
-            if tracer_execute_on_capture:
-                # Trace capture records commands but does not execute them. Execute the trace to
-                # actually compute outputs.
-                for d, trace_id in zip(self._devices, trace_ids, strict=True):
-                    ttnn.execute_trace(d, trace_id, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
-
-            # Allow resources referenced by the function to be freed, which might be used to offload
-            # weights.
-            self._function = None
-
-            for d in self._devices:
-                Tracer._traces_live[d.id()] += 1
-            self._trace_ids = trace_ids
-            self._outputs = outputs
+            self._capture(
+                args,
+                kwargs,
+                cq_id=tracer_cq_id,
+                blocking_execution=tracer_blocking_execution,
+                execute=tracer_execute_on_capture,
+            )
         else:
-            if len(args) > len(self._args):
-                msg = f"expected at most {len(self._args)} positional args, got {len(args)}"
-                raise TypeError(msg)
-
-            # Pad with None to allow omitting trailing positional args.
-            args = args + (None,) * (len(self._args) - len(args))
-            _tree_map(self._update_input, self._args, args, path_label="args")
-
-            # kwargs can be omitted entirely to reuse all previous values, but individual
-            # entries must be explicitly set to None to preserve them (unlike positional args,
-            # _tree_map requires dicts to have matching keys).
-            for name, new in kwargs.items():
-                if name not in self._kwargs:
-                    msg = f"input '{name}' was not in the initial inputs"
-                    raise KeyError(msg)
-
-                # None means reuse the previous value entirely.
-                if new is not None:
-                    _tree_map(self._update_input, self._kwargs[name], new, path_label=f'kwargs["{name}"]')
-
-            for d, trace_id in zip(self._devices, self._trace_ids, strict=True):
-                ttnn.execute_trace(d, trace_id, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
+            self._execute(args, kwargs, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
 
         return self._outputs
+
+    def _capture(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        cq_id: int,
+        blocking_execution: bool,
+        execute: bool,
+    ) -> None:
+        if self._function is None:
+            msg = "tracer cannot be reused after the trace was released"
+            raise RuntimeError(msg)
+
+        args = _tree_map(_verify_value, args, path_label="args")
+        kwargs = _tree_map(_verify_value, kwargs, path_label="kwargs")
+        self._args = _tree_map(self._tensor_to_device, args, path_label="args")
+        self._kwargs = _tree_map(self._tensor_to_device, kwargs, path_label="kwargs")
+
+        if self._prep_run:
+            if self._clone_prep_inputs:
+                prep_args = _tree_map(_clone_tensor, self._args, path_label="args")
+                prep_kwargs = _tree_map(_clone_tensor, self._kwargs, path_label="kwargs")
+            else:
+                prep_args = self._args
+                prep_kwargs = self._kwargs
+
+            self._function(*prep_args, **prep_kwargs)
+            del prep_args, prep_kwargs
+
+        # capture trace
+        logger.debug("capturing trace...")
+        trace_ids = tuple(ttnn.begin_trace_capture(d, cq_id=cq_id) for d in self._devices)
+        try:
+            try:
+                outputs = self._function(*self._args, **self._kwargs)
+            finally:
+                for d, trace_id in zip(self._devices, trace_ids, strict=True):
+                    ttnn.end_trace_capture(d, trace_id, cq_id=cq_id)
+
+            outputs = _tree_map(_verify_value, outputs, path_label="outputs")
+        except Exception:
+            for d, trace_id in zip(self._devices, trace_ids, strict=True):
+                ttnn.release_trace(d, trace_id)
+            raise
+
+        # Allow resources referenced by the function to be freed, which might be used to offload
+        # weights.
+        self._function = None
+
+        for d in self._devices:
+            Tracer._traces_live[d.id()] += 1
+        self._trace_ids = trace_ids
+        self._outputs = outputs
+
+        if execute:
+            # Trace capture records commands but does not execute them. Execute the trace to
+            # actually compute outputs.
+            for d, trace_id in zip(self._devices, trace_ids, strict=True):
+                ttnn.execute_trace(d, trace_id, cq_id=cq_id, blocking=blocking_execution)
+
+    def _execute(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        cq_id: int,
+        blocking: bool,
+    ) -> None:
+        trace_ids = self._trace_ids
+        assert trace_ids is not None
+
+        if len(args) > len(self._args):
+            msg = f"expected at most {len(self._args)} positional args, got {len(args)}"
+            raise TypeError(msg)
+
+        # Pad with None to allow omitting trailing positional args.
+        args = args + (None,) * (len(self._args) - len(args))
+        _tree_map(self._update_input, self._args, args, path_label="args")
+
+        # kwargs can be omitted entirely to reuse all previous values, but individual
+        # entries must be explicitly set to None to preserve them (unlike positional args,
+        # _tree_map requires dicts to have matching keys).
+        for name, new in kwargs.items():
+            if name not in self._kwargs:
+                msg = f"input '{name}' was not in the initial inputs"
+                raise KeyError(msg)
+
+            # None means reuse the previous value entirely.
+            if new is not None:
+                _tree_map(self._update_input, self._kwargs[name], new, path_label=f'kwargs["{name}"]')
+
+        for d, trace_id in zip(self._devices, trace_ids, strict=True):
+            ttnn.execute_trace(d, trace_id, cq_id=cq_id, blocking=blocking)
 
     @property
     def trace_captured(self) -> bool:
