@@ -8,14 +8,14 @@ import functools
 import inspect
 import weakref
 from types import NoneType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from loguru import logger
 
 import ttnn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from typing import ClassVar
 
 _OMITTED = object()
@@ -41,6 +41,7 @@ class Tracer:
 
     _traces_live: ClassVar[dict[int, int]] = {}
 
+    @overload
     def __init__(
         self,
         function: Callable[..., Any],
@@ -50,29 +51,66 @@ class Tracer:
         prep_run: bool = True,
         clone_prep_inputs: bool = True,
     ) -> None:
+        ...
+
+    @overload
+    def __init__(
+        self,
+        function: Callable[..., Any],
+        /,
+        *,
+        devices: Sequence[ttnn.MeshDevice],
+        prep_run: bool = True,
+        clone_prep_inputs: bool = True,
+    ) -> None:
+        ...
+
+    def __init__(
+        self,
+        function: Callable[..., Any],
+        /,
+        *,
+        device: ttnn.MeshDevice | None = None,
+        devices: Sequence[ttnn.MeshDevice] | None = None,
+        prep_run: bool = True,
+        clone_prep_inputs: bool = True,
+    ) -> None:
         """Initialize the tracer.
 
         If the function modifies its input tensors in place, set ``clone_prep_inputs`` to ``True``
         so that preparation runs operate on cloned inputs, leaving the originals intact for trace
         capture.
 
+        Exactly one of ``device`` or ``devices`` must be provided. When ``devices`` is given, a
+        trace is captured and executed on each device simultaneously.
+
         Args:
             function: Function to be traced.
-            device: Device on which to capture and execute the trace.
+            device: Single device on which to capture and execute the trace.
+            devices: Multiple devices on which to capture and execute the trace simultaneously.
             prep_run: Whether to run the function once before capturing the trace.
             clone_prep_inputs: Whether to clone tensor inputs for the preparation run.
         """
-        if device.id() not in Tracer._traces_live:
-            Tracer._traces_live[device.id()] = 0
+        if (device is None) == (devices is None):
+            msg = "exactly one of 'device' or 'devices' must be provided"
+            raise ValueError(msg)
+
+        if devices is None:
+            assert device is not None
+            devices = (device,)
+
+        for d in devices:
+            if d.id() not in Tracer._traces_live:
+                Tracer._traces_live[d.id()] = 0
 
         self._function = function
-        self._device = device
+        self._devices: tuple[ttnn.MeshDevice, ...] = tuple(devices)
         self._prep_run = prep_run
         self._clone_prep_inputs = clone_prep_inputs
         self._args: tuple[Any, ...] = ()
         self._kwargs: dict[str, Any] = {}
         self._outputs: Any = None
-        self._trace_id: ttnn.MeshTraceId | None = None
+        self._trace_ids: tuple[ttnn.MeshTraceId, ...] | None = None
 
     def __call__(
         self,
@@ -107,7 +145,11 @@ class Tracer:
             TypeError: If outputs have unsupported types.
             Any exception raised by the wrapped function during first invocation.
         """
-        if self._trace_id is None:
+        if tracer_blocking_execution and len(self._devices) != 1:
+            tracer_blocking_execution = False
+            logger.warning("blocking execution is not supported with multiple devices")
+
+        if self._trace_ids is None:
             if self._function is None:
                 msg = "tracer cannot be reused after the trace was released"
                 raise RuntimeError(msg)
@@ -130,29 +172,33 @@ class Tracer:
 
             # capture trace
             logger.debug("capturing trace...")
-            trace_id = ttnn.begin_trace_capture(self._device, cq_id=tracer_cq_id)
+            trace_ids = tuple(ttnn.begin_trace_capture(d, cq_id=tracer_cq_id) for d in self._devices)
             try:
                 try:
                     outputs = self._function(*self._args, **self._kwargs)
                 finally:
-                    ttnn.end_trace_capture(self._device, trace_id, cq_id=tracer_cq_id)
+                    for d, trace_id in zip(self._devices, trace_ids, strict=True):
+                        ttnn.end_trace_capture(d, trace_id, cq_id=tracer_cq_id)
 
                 outputs = _tree_map(_verify_value, outputs, path_label="outputs")
             except Exception:
-                ttnn.release_trace(self._device, trace_id)
+                for d, trace_id in zip(self._devices, trace_ids, strict=True):
+                    ttnn.release_trace(d, trace_id)
                 raise
 
             if tracer_execute_on_capture:
                 # Trace capture records commands but does not execute them. Execute the trace to
                 # actually compute outputs.
-                ttnn.execute_trace(self._device, trace_id, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
+                for d, trace_id in zip(self._devices, trace_ids, strict=True):
+                    ttnn.execute_trace(d, trace_id, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
 
             # Allow resources referenced by the function to be freed, which might be used to offload
             # weights.
             self._function = None
 
-            Tracer._traces_live[self._device.id()] += 1
-            self._trace_id = trace_id
+            for d in self._devices:
+                Tracer._traces_live[d.id()] += 1
+            self._trace_ids = trace_ids
             self._outputs = outputs
         else:
             if len(args) > len(self._args):
@@ -175,45 +221,56 @@ class Tracer:
                 if new is not None:
                     _tree_map(self._update_input, self._kwargs[name], new, path_label=f'kwargs["{name}"]')
 
-            ttnn.execute_trace(self._device, self._trace_id, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
+            for d, trace_id in zip(self._devices, self._trace_ids, strict=True):
+                ttnn.execute_trace(d, trace_id, cq_id=tracer_cq_id, blocking=tracer_blocking_execution)
 
         return self._outputs
 
     @property
     def trace_captured(self) -> bool:
         """Whether a trace has been captured and is ready for execution."""
-        return self._trace_id is not None
+        return self._trace_ids is not None
 
     def release_trace(self) -> None:
         """Release the captured trace and clear inputs and outputs."""
-        trace_id = self._trace_id
+        trace_ids = self._trace_ids
+        if trace_ids is None:
+            return
 
-        if trace_id is not None:
-            self._trace_id = None
-            self._args = ()
-            self._kwargs = {}
-            self._outputs = None
-            Tracer._traces_live[self._device.id()] -= 1
-            ttnn.release_trace(self._device, trace_id)
+        self._trace_ids = None
+        self._args = ()
+        self._kwargs = {}
+        self._outputs = None
+        for d, trace_id in zip(self._devices, trace_ids, strict=True):
+            Tracer._traces_live[d.id()] -= 1
+            ttnn.release_trace(d, trace_id)
 
     @staticmethod
     def warn_if_live(device: ttnn.MeshDevice) -> None:
         """Log a warning if there are any live traces that have not been released."""
-        if Tracer._traces_live.get(device.id(), 0) > 0:
+        live = Tracer._traces_live.get(device.id(), 0)
+        if live > 0:
             frame = inspect.stack()[1]
             location = f"{frame.filename}:{frame.lineno} in {frame.function}"
-            logger.warning(f"{Tracer._traces_live} live trace(s) at: {location}")
+            logger.warning(f"{live} live trace(s) at: {location}")
 
     def _tensor_to_device(self, value: Any, *, path_label: str) -> Any:
         if not isinstance(value, ttnn.Tensor):
             return value
 
         if value.device() is None:
-            return value.to(self._device)
-        if value.device() == self._device:
+            if len(self._devices) != 1:
+                msg = (
+                    f"input '{path_label}' is a host tensor; host tensors are not supported "
+                    "when the tracer manages multiple devices"
+                )
+                raise ValueError(msg)
+            return value.to(self._devices[0])
+
+        if any(value.device() == d for d in self._devices):
             return value
 
-        msg = f"input '{path_label}' device {value.device()} does not match tracer device {self._device}"
+        msg = f"input '{path_label}' device {value.device()} does not match any tracer device"
         raise ValueError(msg)
 
     def _update_input(self, prev: Any, new: Any, *, path_label: str) -> None:
@@ -255,8 +312,9 @@ def _verify_value(value: Any, *, path_label: str) -> Any:
     return value
 
 
-def _clone_tensor(value: Any, *, path_label: str) -> Any:  # noqa: ARG001
+def _clone_tensor(value: Any, *, path_label: str) -> Any:
     """Clone a tensor, passing through non-tensor values unchanged."""
+    del path_label
     return ttnn.clone(value) if isinstance(value, ttnn.Tensor) else value
 
 
