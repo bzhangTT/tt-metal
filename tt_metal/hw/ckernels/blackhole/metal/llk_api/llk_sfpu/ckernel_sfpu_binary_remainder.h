@@ -52,7 +52,7 @@ sfpi_inline sfpi::vInt compute_unsigned_remainder_int32(const sfpi::vInt& a_sign
 
     // Compute correction for approximation error: correction = |r| / b
     sfpi::vFloat r_f = sfpi::int32_to_float(sfpi::abs(r), sfpi::RoundMode::NearestEven);
-    sfpi::vInt correction = sfpi::float_to_uint16(r_f * inv_b_f, sfpi::RoundMode::NearestEven);
+    sfpi::vInt correction = sfpi::vInt(sfpi::float_to_uint16(r_f * inv_b_f, sfpi::RoundMode::NearestEven));
 
     // Compute correction * b (full 32-bit result from 24-bit multiplies)
     sfpi::vInt tmp_lo = sfpi::fractional_mul(correction, b);
@@ -129,7 +129,7 @@ sfpi_inline sfpi::vFloat _sfpu_binary_remainder_(sfpi::vFloat in0, sfpi::vFloat 
     // XOR of the float bit-patterns detects sign mismatch via the MSB,
     // avoiding a compound conditional with four comparisons and an OR.
     v_if(result != sfpi::vFloat(0.0f)) {
-        sfpi::vInt signs = sfpi::reinterpret<sfpi::vUInt>(result) ^ sfpi::reinterpret<sfpi::vUInt>(b);
+        sfpi::vInt signs = sfpi::reinterpret<sfpi::vInt>(result) ^ sfpi::reinterpret<sfpi::vInt>(b);
         v_and(signs < 0);
         result += b;
     }

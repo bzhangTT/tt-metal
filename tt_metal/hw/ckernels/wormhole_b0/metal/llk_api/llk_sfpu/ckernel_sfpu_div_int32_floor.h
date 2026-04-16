@@ -19,14 +19,8 @@ sfpi_inline void calculate_div_int32_body(
     // size of each tile in Dest is 64/SFP_DESTREG_STRIDE = 32 rows when using sfpi to load/store
     constexpr uint dst_tile_size_sfpi = 32;
 
-    // SFPI tries to use MOD0_FMT_INT32_SM, which interprets values as
-    // sign-magnitude integers, and is deprecated on Blackhole.  Instead, we
-    // want to use MOD0_FMT_INT32=4, which gives us the original two's
-    // complement integers.
-
-    // Equivalent to: sfpi::vUInt b = sfpi::dst_reg[dst_index_in1 * dst_tile_size_sfpi];
-    sfpi::vUInt b = __builtin_rvtt_sfpload(
-        sfpi::dst_reg[dst_index_in1 * dst_tile_size_sfpi].get(), 4, sfpi::SFPLOAD_ADDR_MODE_NOINC);
+    // the original is 2's complement, read as uint to avoid conversion
+    sfpi::vInt b(sfpi::vUInt(sfpi::dst_reg[dst_index_in1 * dst_tile_size_sfpi]));
 
     // When converting to float, integers are treated as sign-magnitude.
     // Convert inputs to positive values to avoid conversion problems; the
@@ -37,7 +31,7 @@ sfpi_inline void calculate_div_int32_body(
 
     // Convert to floats, but check for the edge case mentioned above.
     sfpi::vFloat b_f = sfpi::int32_to_float(b, sfpi::RoundMode::NearestEven);
-    v_if(b_f < 0.0f) { b_f = 2147483648.0f; }
+    v_if(b_f < 0.0f) { b_f = 0x1.p31f; }
     v_endif;
 
     // Compute 1/b accurate to ~21 bits of precision via:
@@ -62,9 +56,7 @@ sfpi_inline void calculate_div_int32_body(
     // Halley's Method
     sfpi::vFloat e = inv_b_f * neg_b_f + sfpi::vConst1;
 
-    // Equivalent to: sfpi::vUInt a = sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi];
-    sfpi::vUInt a = __builtin_rvtt_sfpload(
-        sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi].get(), 4, sfpi::SFPLOAD_ADDR_MODE_NOINC);
+    sfpi::vInt a(sfpi::vUInt(sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi]));
 
     // Continue Halley's Method
     e = e * e + e;
@@ -94,8 +86,8 @@ sfpi_inline void calculate_div_int32_body(
     // And so qb = (q2<<22 + q1<<11) * (b2<<22 + b1<<11 + b0)
     //           = (q2<<22 * b0) + (q1<<11 * b1<<11) + (q1<<11 * b0)
     sfpi::vFloat q1 = int32_to_float(q & MASK_11, sfpi::RoundMode::NearestEven);
-    sfpi::vFloat q2 = int32_to_float(q >> 11, sfpi::RoundMode::NearestEven);
-    sfpi::vFloat b1 = int32_to_float((b >> 11) & MASK_11, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat q2 = int32_to_float(sfpi::vInt(sfpi::vUInt(q) >> 11), sfpi::RoundMode::NearestEven);
+    sfpi::vFloat b1 = int32_to_float(sfpi::vInt(sfpi::vUInt(b) >> 11) & MASK_11, sfpi::RoundMode::NearestEven);
     sfpi::vFloat b0 = int32_to_float(b & MASK_11, sfpi::RoundMode::NearestEven);
     q = q << 11;
 
@@ -108,17 +100,15 @@ sfpi_inline void calculate_div_int32_body(
     qb += sfpi::exman(hi) << 22;
 
     // Compute remainder.
-    // a = sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi];
-    a = __builtin_rvtt_sfpload(
-        sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi].get(), 4, sfpi::SFPLOAD_ADDR_MODE_NOINC);
+    a = sfpi::vInt(sfpi::vUInt(sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi]));
     a = sfpi::abs(a);
     sfpi::vInt r = a - qb;
     sfpi::vFloat r_f = sfpi::int32_to_float(sfpi::abs(r), sfpi::RoundMode::NearestEven);
 
     // Compute correction value in float32.
     sfpi::vFloat correction_f = r_f * inv_b_f;
-    sfpi::vFloat b2 = sfpi::int32_to_float(b >> 22, sfpi::RoundMode::NearestEven);
-    sfpi::vInt correction = sfpi::float_to_uint16(correction_f, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat b2 = sfpi::int32_to_float(sfpi::vInt(sfpi::vUInt(b) >> 22), sfpi::RoundMode::NearestEven);
+    sfpi::vInt correction = sfpi::vInt(sfpi::float_to_uint16(correction_f, sfpi::RoundMode::NearestEven));
     correction_f = sfpi::int32_to_float(correction, sfpi::RoundMode::NearestEven);
 
     // correction should fit into 11 bits, thus:
@@ -154,19 +144,14 @@ sfpi_inline void calculate_div_int32_body(
     }
     v_endif;
 
-    sfpi::vInt result = q;
+    auto result = sfpi::vInt(q);
 
     // If a ^ b >= 0, then the result will be positive, otherwise negative.
     // Reload signed values here due to register pressure.
-    // a = sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi];
-    // b = sfpi::dst_reg[dst_index_in1 * dst_tile_size_sfpi];
-    a = __builtin_rvtt_sfpload(
-        sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi].get(), 4, sfpi::SFPLOAD_ADDR_MODE_NOINC);
-    b = __builtin_rvtt_sfpload(
-        sfpi::dst_reg[dst_index_in1 * dst_tile_size_sfpi].get(), 4, sfpi::SFPLOAD_ADDR_MODE_NOINC);
-    sfpi::vInt sign = a ^ b;
+    a = sfpi::vInt(sfpi::vUInt(sfpi::dst_reg[dst_index_in0 * dst_tile_size_sfpi]));
+    b = sfpi::vInt(sfpi::vUInt(sfpi::dst_reg[dst_index_in1 * dst_tile_size_sfpi]));
     // Finally, if we expect a negative result, negate the value (two's complement).
-    v_if(sign < 0) {
+    v_if((a ^ b) < 0) {
         result = -result;
 
         // Optionally, if we want "floor" rounding, check for a remainder
@@ -180,9 +165,7 @@ sfpi_inline void calculate_div_int32_body(
     }
     v_endif;
 
-    // sfpi::dst_reg[dst_index_out * dst_tile_size_sfpi] = result;
-    __builtin_rvtt_sfpstore(
-        result.get(), sfpi::dst_reg[dst_index_out * dst_tile_size_sfpi].get(), 4, sfpi::SFPLOAD_ADDR_MODE_NOINC);
+    sfpi::dst_reg[dst_index_out * dst_tile_size_sfpi] = sfpi::vUInt(result);
 }
 
 template <bool APPROXIMATION_MODE, int ITERATIONS>

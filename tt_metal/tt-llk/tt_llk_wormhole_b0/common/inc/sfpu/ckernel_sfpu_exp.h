@@ -82,7 +82,7 @@ sfpi_inline sfpi::vFloat _sfpu_exp_21f_bf16_(sfpi::vFloat val)
     sfpi::vInt exponential_part = exexp(sfpi::reinterpret<sfpi::vFloat>(z), sfpi::ExponentMode::NoDebias); // Extract exponent ( = 2**(integer part of val/ln2))
     sfpi::vInt fractional_part  = sfpi::exman(sfpi::reinterpret<sfpi::vFloat>(z));                   // Extract mantissa ( = leftover part, in [0; 1])
 
-    sfpi::vFloat frac = sfpi::int32_to_float(fractional_part, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat frac = sfpi::int32_to_float(sfpi::vInt(fractional_part), sfpi::RoundMode::NearestEven);
 
     // To refine approximation of 2**(x_f), we use an approximation of 2**x on [0; 2^23]
     // This uses a 2nd degree polynomial adjustment of the fractional part
