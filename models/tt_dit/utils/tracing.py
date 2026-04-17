@@ -204,10 +204,6 @@ class Tracer:
                 ttnn.release_trace(d, trace_id)
             raise
 
-        # Allow resources referenced by the function to be freed, which might be used to offload
-        # weights.
-        self._function = None
-
         for d in self._devices:
             Tracer._traces_live[d.id()] += 1
         self._trace_ids = trace_ids
@@ -271,6 +267,13 @@ class Tracer:
         for d, trace_id in zip(self._devices, trace_ids, strict=True):
             Tracer._traces_live[d.id()] -= 1
             ttnn.release_trace(d, trace_id)
+
+    def release_function(self) -> None:
+        """Drop the reference to the wrapped function.
+
+        This allows resources held by the function to be garbage collected.
+        """
+        self._function = None
 
     @staticmethod
     def warn_if_live(device: ttnn.MeshDevice) -> None:
