@@ -112,6 +112,7 @@ class Tracer:
     def __call__(
         self,
         *args: Any,
+        traced: bool = True,
         tracer_cq_id: int = 0,
         tracer_blocking_execution: bool = True,
         tracer_execute_on_capture: bool = True,
@@ -127,6 +128,8 @@ class Tracer:
         automatically be moved to the tracer device.
 
         Args:
+            traced: Whether to capture/execute the trace on this call. If ``False``, the wrapped
+                function is called directly without tracing.
             tracer_cq_id: Command queue id.
             tracer_blocking_execution: Whether ``ttnn.execute_trace`` should block.
             tracer_execute_on_capture: Whether to execute the trace immediately after capturing it
@@ -142,6 +145,13 @@ class Tracer:
             TypeError: If outputs have unsupported types.
             Any exception raised by the wrapped function during first invocation.
         """
+        if not traced:
+            if self._function is None:
+                msg = "untraced execution is not possible after the captured function has been released"
+                raise RuntimeError(msg)
+
+            return self._function(*args, **kwargs)
+
         if tracer_blocking_execution and len(self._devices) != 1:
             tracer_blocking_execution = False
             logger.warning("blocking execution is not supported with multiple devices")
