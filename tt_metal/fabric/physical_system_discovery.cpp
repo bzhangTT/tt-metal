@@ -65,7 +65,18 @@ TrayID get_tray_id_for_chip(
     const auto& ordered_bus_ids = mobo_to_bus_ids.at(mobo_name);
     auto bus_id = tt::tt_fabric::get_bus_id(cluster, chip_id);
     auto bus_id_it = std::find(ordered_bus_ids.begin(), ordered_bus_ids.end(), bus_id);
-    TT_FATAL(bus_id_it != ordered_bus_ids.end(), "Bus ID {} not found.", bus_id);
+    if (bus_id_it == ordered_bus_ids.end()) {
+        // UMD returns bus_id 0 for chips without a local PCI device (e.g. remote/tunneled chips
+        // on Wormhole n300 cards after UMD PR #2418 removed the parent-PCIe borrow). Treat any
+        // unmappable bus_id the same as the unknown-motherboard case rather than fataling.
+        log_warning(
+            tt::LogAlways,
+            "Bus ID 0x{:x} for chip_id={} not in '{}' bus-id list — defaulting tray_id to 0.",
+            bus_id,
+            chip_id,
+            mobo_name);
+        return TrayID{0};
+    }
     auto tray_id = std::distance(ordered_bus_ids.begin(), bus_id_it) + 1;
     return TrayID{static_cast<unsigned int>(tray_id)};
 }
