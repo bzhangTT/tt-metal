@@ -14,8 +14,8 @@
 void kernel_main() {
     const uint32_t cb_id = get_compile_time_arg_val(0);
     constexpr bool use_dfbs = get_compile_time_arg_val(1) == 1;
-    uint32_t dst_addr  = get_arg_val<uint32_t>(0); // global base address
-    uint32_t dst_bank_id = get_arg_val<uint32_t>(1); // data is in one bank
+    uint32_t dst_addr = get_arg_val<uint32_t>(0);     // global base address
+    uint32_t dst_bank_id = get_arg_val<uint32_t>(1);  // data is in one bank
     uint32_t num_tiles = get_arg_val<uint32_t>(2);
     // DRAM page stride: the allocator may round page_size up (e.g. to
     // NOC_DRAM_READ_ALIGNMENT_BYTES = 64 on Quasar), so tiles are spaced
@@ -50,7 +50,8 @@ void kernel_main() {
 
         for (uint32_t i = 0; i < num_tiles; i += ublock_size_tiles) {
 #ifdef ARCH_QUASAR
-            noc.async_write<experimental::Noc::TxnIdMode::ENABLED>(dfb, dst_dram, {}, {.bank_id = dst_bank_id, .addr = tlocal_dst_addr});
+            noc.async_write<experimental::Noc::TxnIdMode::ENABLED>(
+                dfb, dst_dram, {}, {.bank_id = dst_bank_id, .addr = tlocal_dst_addr});
 #else
             dfb.wait_front(ublock_size_tiles);
             noc.async_write(dfb, dst_dram, ublock_size_bytes, {}, {.bank_id = dst_bank_id, .addr = tlocal_dst_addr});
