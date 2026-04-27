@@ -200,11 +200,12 @@ void SimpleTraceAllocator::allocate_trace_programs_on_subdevice(
 
             uint32_t non_binary_size;
             if (has_separate_binary_offset && binary_in_config) {
-                non_binary_size = program_config.kernel_text_offset;
+                // EXPERIMENT: bundle binary into non-binary region (contiguous layout, no caching).
+                non_binary_size = program_config.kernel_text_offset + program_config.kernel_text_size;
             } else {
                 non_binary_size = node.program->get_program_config_sizes()[index];
             }
-            uint32_t binary_size = program_config.kernel_text_size;
+            [[maybe_unused]] uint32_t binary_size = program_config.kernel_text_size;
             auto& allocator = region_allocators_[index];
 
             uint64_t pid = node.program->get_id();
@@ -215,35 +216,10 @@ void SimpleTraceAllocator::allocate_trace_programs_on_subdevice(
             uint32_t binary_addr = 0;
 
             if (has_separate_binary_offset && binary_in_config && binary_size > 0) {
-                // Binary is stored in the config buffer and the dispatcher has a dedicated write
-                // offset for this core type; allocate separately so it can be cached across
-                // invocations of the same program.
-                if (auto mem_addr = allocator.get_region(ExtraData::kBinary, pid)) {
-                    binary_addr = *mem_addr;
-                    allocator.update_region_trace_idx(*mem_addr, i);
-                } else {
-                    all_binaries_cached = false;
-                    auto res = allocator.allocate_region(binary_size, i, ExtraData::kBinary, pid);
-                    if (!res.second.has_value()) {
-                        // Clear the allocator and try again. Should succeed unless the total size
-                        // of the program is larger than the config buffer.
-                        allocator.reset_allocator();
-                        std::tie(rta_sync_idx, rta_addr) =
-                            allocator.allocate_region(non_binary_size, i, ExtraData::kNonBinary, pid);
-                        res = allocator.allocate_region(binary_size, i, ExtraData::kBinary, pid);
-                        TT_ASSERT(res.second.has_value(), "Failed to allocate binary region");
-                        TT_ASSERT(
-                            !subdevice_launch_window.empty(),
-                            "Failed to allocate binary region on first program on sub-device");
-                        auto last_subdevice_idx = static_cast<uint32_t>(subdevice_launch_window.back());
-                        binary_sync_idx = merge_syncs(binary_sync_idx, last_subdevice_idx);
-                        nonbinary_sync_idx = merge_syncs(nonbinary_sync_idx, last_subdevice_idx);
-                    } else {
-                        binary_sync_idx = merge_syncs(res.first, binary_sync_idx);
-                    }
-                    binary_addr = *res.second;
-                    allocator.add_region(ExtraData::kBinary, pid, binary_addr);
-                }
+                // EXPERIMENT: binary is contiguous with non-binary; use offset within the same region.
+                TT_ASSERT(rta_addr.has_value(), "Failed to allocate combined region");
+                binary_addr = *rta_addr + program_config.kernel_text_offset;
+                all_binaries_cached = false;
             } else if (!binary_in_config && !node.program->get_kernel_groups(index).empty()) {
                 // Binary goes to a fixed L1 address (not in the config buffer). Must sync with the
                 // previous program that used this fixed address before overwriting it.
