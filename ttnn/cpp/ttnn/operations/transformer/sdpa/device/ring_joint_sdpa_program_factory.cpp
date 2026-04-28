@@ -261,7 +261,7 @@ tt::tt_metal::ProgramDescriptor RingJointSDPAProgramFactory::create_descriptor(
     {
         sdpa_fused_op_signaler->fused_op_signaler_mode = ttnn::experimental::ccl::FusedOpSignalerMode::MULTI;
         sdpa_fused_op_signaler->fused_op_receiver_cores_noc.clear();
-        const auto cores = tt::tt_metal::corerange_to_cores(core_grid_set, std::nullopt, /*row_major=*/true);
+        const auto cores = tt::tt_metal::corerange_to_cores(core_grid_set, std::nullopt, /*row_wise=*/true);
         for (const auto& core : cores) {
             sdpa_fused_op_signaler->fused_op_receiver_cores_noc.push_back(
                 mesh_device->worker_core_from_logical_core(core));

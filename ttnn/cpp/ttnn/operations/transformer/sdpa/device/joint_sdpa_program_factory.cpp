@@ -26,7 +26,11 @@ namespace ttnn::prim {
 
 // implementation of softmax with optional scale/mask (see the header for input_tensor more detailed description)
 ProgramDescriptor JointSDPADeviceOperation::JointSDPAProgramFactory::create_descriptor(
-    const operation_attributes_t& args, const tensor_args_t& tensor_args, tensor_return_value_t& output_tensors) {
+    const operation_attributes_t& operation_attributes,
+    const tensor_args_t& tensor_args,
+    tensor_return_value_t& tensor_return_value) {
+    const auto& args = operation_attributes;
+    auto& output_tensors = tensor_return_value;
     /*
     Q: B x NH x N x DH
     K: B x NH x N x DH

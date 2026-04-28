@@ -35,44 +35,37 @@ uint32_t resolve_ring_id(
         return operation_attributes.ring_id.value();
     }
 
-    // Infer ring_id from device coordinate (similar to ring_joint_sdpa)
-    auto* mesh_device = tensor_args.q.device();
-
-    // Ensure mesh_device is not null before dereferencing
-    TT_FATAL(mesh_device != nullptr, "Mesh device must not be null when inferring ring_id");
+    // Infer ring_id directly from the mesh coordinate. ring_size constrains the ring to one
+    // of the two mesh axes, so the index along that axis IS the ring_id - no need to look up
+    // the device by coord (which uses the deprecated MeshDevice::get_device(MeshCoordinate)
+    // and is multi-host-unsafe).
     TT_FATAL(
         mesh_dispatch_coordinate.has_value(),
         "mesh_dispatch_coordinate must be provided when ring_id is not explicitly set");
+    auto* mesh_device = tensor_args.q.device();
+    TT_FATAL(mesh_device != nullptr, "Mesh device must not be null when inferring ring_id");
 
     const auto& mesh_coord = mesh_dispatch_coordinate.value();
-    IDevice* target_device = mesh_device->get_device(mesh_coord);
-
     const auto& mesh_view = mesh_device->get_view();
-    std::vector<IDevice*> devices_to_use;
-    // For simplicity, assume ring is along the first axis (adjust as needed)
     if (mesh_view.shape()[0] == operation_attributes.ring_size) {
-        devices_to_use = mesh_view.get_devices_on_column(mesh_coord[1]);
-    } else if (mesh_view.shape()[1] == operation_attributes.ring_size) {
-        devices_to_use = mesh_view.get_devices_on_row(mesh_coord[0]);
-    } else {
-        TT_FATAL(
-            false,
-            "Ring size {} doesn't match mesh dimensions [{}, {}]",
-            operation_attributes.ring_size,
-            mesh_view.shape()[0],
-            mesh_view.shape()[1]);
+        // Ring is along axis 0 (rows of the mesh). ring_id = row index.
+        const uint32_t curr_ring_id = mesh_coord[0];
+        log_debug(tt::LogOp, "Inferred ring_id (axis 0): {}", curr_ring_id);
+        return curr_ring_id;
     }
-
-    // Find ring_id (device index in the ring)
-    uint32_t curr_ring_id = 0;
-    for (uint32_t i = 0; i < operation_attributes.ring_size; ++i) {
-        if (devices_to_use.at(i) == target_device) {
-            curr_ring_id = i;
-            break;
-        }
+    if (mesh_view.shape()[1] == operation_attributes.ring_size) {
+        // Ring is along axis 1 (columns of the mesh). ring_id = column index.
+        const uint32_t curr_ring_id = mesh_coord[1];
+        log_debug(tt::LogOp, "Inferred ring_id (axis 1): {}", curr_ring_id);
+        return curr_ring_id;
     }
-    log_debug(tt::LogOp, "Inferred ring_id: {} for device_id: {}", curr_ring_id, target_device->id());
-    return curr_ring_id;
+    TT_FATAL(
+        false,
+        "Ring size {} doesn't match mesh dimensions [{}, {}]",
+        operation_attributes.ring_size,
+        mesh_view.shape()[0],
+        mesh_view.shape()[1]);
+    return 0;  // unreachable; satisfies non-void return.
 }
 
 }  // namespace

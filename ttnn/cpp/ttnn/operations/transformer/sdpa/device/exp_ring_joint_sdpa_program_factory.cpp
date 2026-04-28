@@ -105,10 +105,12 @@ void fabric_mux_connection_rt_args(
 }  // namespace
 
 tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descriptor(
-    const ExpRingJointSDPAParams& args,
+    const ExpRingJointSDPAParams& operation_attributes,
     const ExpRingJointSDPAInputs& tensor_args,
-    ExpRingJointSDPAResult& output_tensors,
+    ExpRingJointSDPAResult& tensor_return_value,
     const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate) {
+    const auto& args = operation_attributes;
+    auto& output_tensors = tensor_return_value;
     TT_FATAL(
         mesh_dispatch_coordinate.has_value(),
         "ExpRingJointSDPAProgramFactory::create_descriptor requires mesh_dispatch_coordinate");
