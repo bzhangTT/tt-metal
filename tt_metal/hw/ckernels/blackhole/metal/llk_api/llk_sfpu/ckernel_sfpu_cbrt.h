@@ -14,7 +14,7 @@ namespace ckernel::sfpu {
 // Moroz et al. <https://doi.org/10.3390/en14041058>
 
 template <bool APPROXIMATION_MODE, bool is_fp32_dest_acc_en, int ITERATIONS>
-inline void calculate_cube_root() {
+inline void calculate_cube_root(std::uint32_t dst_index_in, std::uint32_t dst_index_out) {
     sfpi::vFloat negative_third_256 = -0x1.555556p-10f;
 
     // Magic constant 0x548c2b4b / 256 + 2^23
@@ -56,7 +56,7 @@ inline void calculate_cube_root() {
             d = sfpi::setsgn(d, a);
             y = d * (t * t);
 
-            sfpi::dst_reg[0] = y;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = y;
         } else {
             sfpi::vFloat d = x * (y * y);
             sfpi::vFloat c = d * y;
@@ -64,7 +64,7 @@ inline void calculate_cube_root() {
             d = sfpi::setsgn(d, a);
             y = d * (t * t);
 
-            sfpi::dst_reg[0] = sfpi::float_to_fp16b(y, sfpi::RoundMode::NearestEven);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::float_to_fp16b(y, sfpi::RoundMode::NearestEven);
         }
         sfpi::dst_reg++;
     }

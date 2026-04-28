@@ -25,7 +25,7 @@ namespace sfpu {
      t2)
 
 template <bool APPROXIMATION_MODE, int ITERATIONS = 8>
-inline void calculate_i1() {
+inline void calculate_i1(std::uint32_t dst_index_in, std::uint32_t dst_index_out) {
 #pragma GCC unroll 0
 
     for (int d = 0; d < ITERATIONS; d++) {
@@ -47,7 +47,7 @@ inline void calculate_i1() {
                                         0.125f,
                                         x);
         result = input * 0.5f + derivative;
-        dst_reg[0] = result;
+        dst_reg[(dst_index_out - dst_index_in) * 32] = result;
         dst_reg++;
     }
 }

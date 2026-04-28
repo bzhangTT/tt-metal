@@ -13,7 +13,8 @@ namespace ckernel::sfpu {
 // param0 is the bit representation of a float
 // This is useful for operations like RMSNorm: rsqrt(variance + epsilon)
 template <bool APPROXIMATION_MODE, int ITERATIONS, bool fp32_dest_acc_en, bool FAST_APPROX>
-inline void calculate_add_rsqrt(uint32_t param0) {
+inline void calculate_add_rsqrt(uint32_t dst_index_in, uint32_t dst_index_out, uint32_t param0) {
+    constexpr uint32_t SFP_DST_TILE_ROWS = 32;
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
         sfpi::vFloat x = sfpi::dst_reg[0];
@@ -23,9 +24,10 @@ inline void calculate_add_rsqrt(uint32_t param0) {
         sfpi::vFloat y = _calculate_sqrt_body_<APPROXIMATION_MODE, true, FAST_APPROX>(x_plus_addend);
 
         if constexpr (fp32_dest_acc_en) {
-            sfpi::dst_reg[0] = y;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * SFP_DST_TILE_ROWS] = y;
         } else {
-            sfpi::dst_reg[0] = sfpi::reinterpret<sfpi::vFloat>(float_to_fp16b(y, RoundMode::NearestEven));
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * SFP_DST_TILE_ROWS] =
+                sfpi::reinterpret<sfpi::vFloat>(float_to_fp16b(y, RoundMode::NearestEven));
         }
         sfpi::dst_reg++;
     }
