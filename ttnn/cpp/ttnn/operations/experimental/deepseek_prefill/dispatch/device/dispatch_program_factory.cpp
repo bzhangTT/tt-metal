@@ -87,12 +87,53 @@ DispatchProgramFactory::cached_mesh_workload_t DispatchProgramFactory::create_me
     const auto subgroups =
         ccl::common::split_into_subgroups(tensor_coords, subgroup_axis, operation_attributes.num_dispatch_subgroups);
 
+    {
+        std::string ranges_str = "{";
+        for (size_t i = 0; i < tensor_coords.ranges().size(); ++i) {
+            if (i > 0) {
+                ranges_str += ", ";
+            }
+            ranges_str +=
+                fmt::format("[{}, {}]", tensor_coords.ranges()[i].start_coord(), tensor_coords.ranges()[i].end_coord());
+        }
+        ranges_str += "}";
+
+        std::string subgroups_str = "{";
+        for (size_t i = 0; i < subgroups.size(); ++i) {
+            if (i > 0) {
+                subgroups_str += ", ";
+            }
+            subgroups_str += fmt::format("[{}, {}]", subgroups[i].start_coord(), subgroups[i].end_coord());
+        }
+        subgroups_str += "}";
+
+        log_info(
+            tt::LogOp,
+            "dispatch create_mesh_workload: mesh_shape={} num_dispatch_subgroups={} subgroup_axis={} "
+            "tensor_coords.num_ranges={} tensor_coords={} subgroups={}",
+            mesh_device->shape(),
+            operation_attributes.num_dispatch_subgroups,
+            subgroup_axis,
+            tensor_coords.ranges().size(),
+            ranges_str,
+            subgroups_str);
+    }
+
     for (const auto& subgroup_range : subgroups) {
         auto init_barrier_semaphore = ttnn::global_semaphore::create_global_semaphore(
             mesh_device, operation_attributes.worker_core_range_set, 0, sem_buffer_type);
         auto final_barrier_semaphore = ttnn::global_semaphore::create_global_semaphore(
             mesh_device, operation_attributes.worker_core_range_set, 0, sem_buffer_type);
         tt::tt_metal::distributed::Synchronize(mesh_device, std::nullopt, {});
+
+        log_info(
+            tt::LogOp,
+            "dispatch create_mesh_workload: subgroup=[{}, {}] init_barrier_sem.address=0x{:x} "
+            "final_barrier_sem.address=0x{:x}",
+            subgroup_range.start_coord(),
+            subgroup_range.end_coord(),
+            (uint32_t)init_barrier_semaphore.address(),
+            (uint32_t)final_barrier_semaphore.address());
 
         for (const auto& coord : subgroup_range) {
             auto cached_program = create_at(
@@ -162,6 +203,20 @@ ttnn::device_operation::CachedProgram<DispatchSharedVariables> DispatchProgramFa
         const uint32_t local_col = mesh_coordinate.dims() > 1 ? (mesh_coordinate[1] - start[1]) : 0;
         linearized_mesh_coord = local_row * subgroup_num_cols + local_col;
     }
+
+    log_info(
+        tt::LogOp,
+        "dispatch create_at: coord={} subgroup=[{}, {}] subgroup_num_rows={} subgroup_num_cols={} "
+        "subgroup_num_devices={} linearized_subgroup_coord={} src_mesh_id={} src_chip_id={}",
+        mesh_coordinate,
+        subgroup_range.start_coord(),
+        subgroup_range.end_coord(),
+        subgroup_num_rows,
+        subgroup_num_cols,
+        subgroup_num_devices,
+        linearized_mesh_coord,
+        src_mesh_id,
+        src_chip_id);
 
     log_debug(
         tt::LogOp,
@@ -285,6 +340,31 @@ ttnn::device_operation::CachedProgram<DispatchSharedVariables> DispatchProgramFa
     const auto [neighbors, directions] =
         ccl::common::get_neighbors_in_range(subgroup_range, mesh_coordinate, topology, operation_attributes.axis);
 
+    {
+        std::string neighbors_str = "{";
+        for (size_t i = 0; i < neighbors.size(); ++i) {
+            if (i > 0) {
+                neighbors_str += ", ";
+            }
+            neighbors_str += fmt::format("{}", neighbors[i]);
+        }
+        neighbors_str += "}";
+        log_info(
+            tt::LogOp,
+            "dispatch get_neighbors_in_range: coord={} subgroup=[{}, {}] axis={} topology={} neighbors={} "
+            "directions=[E={}, W={}, N={}, S={}]",
+            mesh_coordinate,
+            subgroup_range.start_coord(),
+            subgroup_range.end_coord(),
+            operation_attributes.axis.has_value() ? std::to_string(operation_attributes.axis.value()) : "none",
+            topology,
+            neighbors_str,
+            directions[0],
+            directions[1],
+            directions[2],
+            directions[3]);
+    }
+
     // c_8: packet header CB for fabric sends (writer-only)
     if (operation_attributes.num_links > 0) {
         constexpr uint32_t num_packet_headers = 2;  // unicast + metadata
@@ -312,9 +392,13 @@ ttnn::device_operation::CachedProgram<DispatchSharedVariables> DispatchProgramFa
         dest_mesh_id.push_back(*dest_fabric_node_id.mesh_id);
         dest_chip_id.push_back((uint32_t)dest_fabric_node_id.chip_id);
     }
-    log_debug(tt::LogOp, "dest_chip_id: {}", ccl::common::stringify(dest_chip_id));
-    log_debug(tt::LogOp, "dest_mesh_id: {}", ccl::common::stringify(dest_mesh_id));
-    log_debug(tt::LogOp, "directions: {}", ccl::common::stringify(directions));
+    log_info(
+        tt::LogOp,
+        "dispatch fabric world view for coord={}: dest_chip_id={} dest_mesh_id={} directions={}",
+        mesh_coordinate,
+        ccl::common::stringify(dest_chip_id),
+        ccl::common::stringify(dest_mesh_id),
+        ccl::common::stringify(directions));
 
     auto fabric_max_packet_size = tt::tt_fabric::get_tt_fabric_max_payload_size_bytes();
     log_debug(
@@ -462,13 +546,11 @@ ttnn::device_operation::CachedProgram<DispatchSharedVariables> DispatchProgramFa
                     continue;
                 }
 
-                log_debug(
+                log_info(
                     tt::LogOp,
-                    "Connection between mesh coord ({}, {}) and ({}, {}) at core {} link {}",
-                    mesh_coordinate[0],
-                    mesh_coordinate[1],
-                    neighbor_coordinate[0],
-                    neighbor_coordinate[1],
+                    "dispatch fabric link: src={} dst={} sender_core={} link={}",
+                    mesh_coordinate,
+                    neighbor_coordinate,
                     sender_core,
                     core_link);
                 tt::tt_fabric::append_fabric_connection_rt_args(

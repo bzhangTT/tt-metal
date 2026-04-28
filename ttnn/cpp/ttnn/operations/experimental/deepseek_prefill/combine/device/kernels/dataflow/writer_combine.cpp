@@ -146,6 +146,8 @@ void kernel_main() {
 
     // Init semaphore exchange
     const uint64_t init_noc_semaphore_addr = get_noc_addr(init_semaphore_address);
+    DPRINT << "Combine writer[" << linearized_mesh_coord << "]: init send begin (combine_devices=" << combine_devices
+           << " expected=" << (combine_devices - 1) << ")" << ENDL();
     send_init_semaphore_to_configured_targets<
         linearized_mesh_coord,
         topology,
@@ -155,9 +157,12 @@ void kernel_main() {
         axis,
         total_mesh_devices>(
         fabric_connections, sem_packet_header, dest_chip_ids, dest_mesh_ids, init_noc_semaphore_addr);
+    DPRINT << "Combine writer[" << linearized_mesh_coord << "]: init send done; waiting" << ENDL();
 
     volatile tt_l1_ptr uint32_t* init_sem_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(init_semaphore_address);
     noc_semaphore_wait(init_sem_ptr, combine_devices - 1);
+    DPRINT << "Combine writer[" << linearized_mesh_coord << "]: init wait satisfied (val=" << *init_sem_ptr << ")"
+           << ENDL();
     noc_semaphore_set(init_sem_ptr, 0);
 
     DPRINT_COMBINE << "Fabric setup complete" << ENDL();
@@ -214,6 +219,7 @@ void kernel_main() {
 
     // Exit semaphore exchange
     {
+        DPRINT << "Combine writer[" << linearized_mesh_coord << "]: exit send begin" << ENDL();
         const uint64_t exit_noc_semaphore_addr = get_noc_addr(init_semaphore_address);
         send_init_semaphore_to_configured_targets<
             linearized_mesh_coord,
@@ -224,13 +230,16 @@ void kernel_main() {
             axis,
             total_mesh_devices>(
             fabric_connections, unicast_packet_header, dest_chip_ids, dest_mesh_ids, exit_noc_semaphore_addr);
+        DPRINT << "Combine writer[" << linearized_mesh_coord << "]: exit send done; waiting" << ENDL();
 
         volatile tt_l1_ptr uint32_t* exit_sem_ptr =
             reinterpret_cast<volatile tt_l1_ptr uint32_t*>(init_semaphore_address);
         noc_semaphore_wait(exit_sem_ptr, combine_devices - 1);
+        DPRINT << "Combine writer[" << linearized_mesh_coord << "]: exit wait satisfied" << ENDL();
         noc_semaphore_set(exit_sem_ptr, 0);
     }
 
     close_direction_connections(directions, fabric_connections);
+    DPRINT << "Combine writer[" << linearized_mesh_coord << "]: exiting" << ENDL();
 #endif
 }
