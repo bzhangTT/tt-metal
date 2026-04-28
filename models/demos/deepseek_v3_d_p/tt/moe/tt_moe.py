@@ -432,6 +432,32 @@ class TtMoe(LightweightModule):
         # ========================================
         # Dispatch expects full emb_dim on each device (x already has this)
 
+        # Debug: dump per-shard addr+content of dispatch's inputs to find which one is broken on SG1.
+        def _dump_input(_name, _tensor):
+            try:
+                _shards = ttnn.get_device_tensors(_tensor)
+                for _si, _sh in enumerate(_shards):
+                    try:
+                        _addr = _sh.buffer_address()
+                    except Exception:
+                        _addr = None
+                    _t = ttnn.to_torch(_sh).reshape(-1)
+                    _first = _t[:8].tolist()
+                    _csum = int(_t.to(_t.dtype).sum().item()) & 0xFFFFFFFF
+                    _addr_s = f"0x{_addr:x}" if _addr is not None else "n/a"
+                    logger.info(
+                        f"[dispatch input {_name}] shard={_si} shape={tuple(_sh.shape)} dtype={_sh.dtype} "
+                        f"addr={_addr_s} csum=0x{_csum:08x} first8={_first}"
+                    )
+            except Exception as _e:
+                logger.warning(f"[dispatch input {_name}] dump failed: {_e}")
+
+        _dump_input("x", x)
+        _dump_input("scores", scores)
+        _dump_input("indices", indices)
+        _dump_input("tt_expert_offsets", tt_expert_offsets)
+        _dump_input("tt_expert_dispatch_table", self.tt_expert_dispatch_table)
+
         dispatched_buffer, metadata = self.dispatch_module(
             x,
             scores,
@@ -443,6 +469,26 @@ class TtMoe(LightweightModule):
         scores = ttnn.to_memory_config(scores, ttnn.DRAM_MEMORY_CONFIG)
         indices = ttnn.to_memory_config(indices, ttnn.DRAM_MEMORY_CONFIG)
         logger.debug(f"[TtMoe.forward] Dispatch output: buffer={dispatched_buffer.shape}, metadata={metadata.shape}")
+
+        # Debug helper: dump metadata DRAM address + content snapshot per shard at each checkpoint.
+        def _dump_meta(_tag):
+            try:
+                _shards = ttnn.get_device_tensors(metadata)
+                for _si, _sh in enumerate(_shards):
+                    try:
+                        _addr = _sh.buffer_address()
+                    except Exception:
+                        _addr = None
+                    _t = ttnn.to_torch(_sh).reshape(-1)
+                    # Sample first 12 ints and a coarse checksum of the full buffer.
+                    _first = _t[:12].tolist()
+                    _csum = int(_t.to(_t.dtype).sum().item()) & 0xFFFFFFFF
+                    _addr_s = f"0x{_addr:x}" if _addr is not None else "n/a"
+                    logger.info(f"[meta-track {_tag}] shard={_si} addr={_addr_s} csum=0x{_csum:08x} first12={_first}")
+            except Exception as _e:
+                logger.warning(f"[meta-track {_tag}] dump failed: {_e}")
+
+        _dump_meta("post_dispatch")
 
         # ========================================
         # Step 3: Routed experts (enabled)
@@ -457,6 +503,7 @@ class TtMoe(LightweightModule):
         # Convert dispatched_buffer to TILE_LAYOUT for routed experts
         dispatched_buffer_tiled = ttnn.to_layout(dispatched_buffer_squeezed, ttnn.TILE_LAYOUT)
         logger.debug(f"[TtMoe.forward] dispatched_buffer_tiled shape: {dispatched_buffer_tiled.shape}")
+        _dump_meta("post_to_tile")
 
         if skip_experts:
             logger.info("[TtMoe.forward] skip_experts=True — passing dispatched_buffer through as expert_outputs")
@@ -464,6 +511,7 @@ class TtMoe(LightweightModule):
         else:
             expert_outputs = self.routed_expert(dispatched_buffer_tiled, tt_expert_token_counts)
         logger.debug(f"[TtMoe.forward] expert_outputs shape: {expert_outputs.shape}")
+        _dump_meta("post_routed_expert")
 
         # Add back the batch dimensions for combine
         # (experts_per_chip, max_tokens, emb_dim) -> (1, 1, experts_per_chip, max_tokens, emb_dim)
@@ -477,6 +525,35 @@ class TtMoe(LightweightModule):
         # Combine expects ROW_MAJOR input
         expert_outputs_rm = ttnn.to_layout(expert_outputs, ttnn.ROW_MAJOR_LAYOUT)
         logger.debug(f"[TtMoe.forward] expert_outputs_rm shape: {expert_outputs_rm.shape} {expert_outputs_rm.dtype=}")
+        _dump_meta("post_to_row_major")
+
+        # Debug: drain dispatch + experts + untilize before combine to isolate fabric/state spillover
+        ttnn.synchronize_device(self.mesh_device)
+        logger.info("[TtMoe.forward] pre-combine synchronize_device complete")
+        _dump_meta("pre_combine")
+
+        # Debug: dump per-chip view of combine inputs (especially expert token counts which
+        # control reader's data-loop iteration count per local expert).
+        try:
+            _tcs_shards = ttnn.get_device_tensors(tt_expert_token_counts)
+            _meta_shards = ttnn.get_device_tensors(metadata)
+            _max_cap = self.dispatch_module.max_dispatched_tokens_per_expert
+            for _i, (_tc, _meta) in enumerate(zip(_tcs_shards, _meta_shards)):
+                _tc_host = ttnn.to_torch(_tc).flatten().tolist()
+                _capped = [min(int(c), _max_cap) for c in _tc_host]
+                _total = sum(_capped)
+                logger.info(
+                    f"[combine input] shard_idx={_i} expert_tok_counts={_tc_host} "
+                    f"sum_capped={_total} max_cap={_max_cap}"
+                )
+                _meta_t = ttnn.to_torch(_meta).reshape(-1, 5)
+                _dst_chip_col = _meta_t[:, 0].tolist()
+                _dst_hist = {}
+                for _d in _dst_chip_col:
+                    _dst_hist[int(_d)] = _dst_hist.get(int(_d), 0) + 1
+                logger.info(f"[combine input] shard_idx={_i} metadata dst_chip histogram={_dst_hist}")
+        except Exception as _e:
+            logger.warning(f"[combine input] debug dump failed: {_e}")
 
         combined_output = self.combine_module(
             expert_outputs_rm,
@@ -484,6 +561,10 @@ class TtMoe(LightweightModule):
             tt_expert_token_counts,
         )
         logger.debug(f"[TtMoe.forward] combined_output shape: {combined_output.shape}")
+
+        # Debug: drain combine before reduce to isolate combine completion from downstream ops
+        ttnn.synchronize_device(self.mesh_device)
+        logger.info("[TtMoe.forward] post-combine synchronize_device complete")
 
         # ========================================
         # Step 5: Reduce (fused weighted sum over topk + reduce-scatter for TP sharding)
