@@ -446,7 +446,7 @@ jobs:
           cp /work/tt_metal/soc_descriptors/${{ matrix.soc_desc }} $TT_METAL_SIMULATOR_HOME/soc_descriptor.yaml
 
       - name: LLK C++ tests
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.job-timeout }}
         run: |
           ./build/test/tt_metal/unit_tests_llk
   ttsim-galaxy-cpp-unit-tests:
