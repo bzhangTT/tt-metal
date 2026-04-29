@@ -1,11 +1,9 @@
 # SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import List
-
 import pytest
 import torch
-from helpers.format_config import DataFormat, FormatConfig
+from helpers.format_config import DataFormat
 from helpers.golden_generators import UnarySFPUGolden, get_golden_generator
 from helpers.llk_params import (
     DataCopyType,
@@ -16,7 +14,11 @@ from helpers.llk_params import (
     UnpackerEngine,
     format_dict,
 )
-from helpers.param_config import input_output_formats, parametrize
+from helpers.param_config import (
+    generate_sfpu_format_dest_acc_combinations,
+    input_output_formats,
+    parametrize,
+)
 from helpers.stimuli_config import StimuliConfig
 from helpers.stimuli_generator import generate_stimuli
 from helpers.test_config import TestConfig
@@ -33,87 +35,6 @@ from helpers.test_variant_parameters import (
 )
 from helpers.utils import passed_test
 
-
-def _is_invalid_quasar_combination(
-    fmt: FormatConfig, dest_acc: DestAccumulation
-) -> bool:
-    """
-    Check if format combination is invalid for Quasar.
-
-    Args:
-        fmt: Format configuration with input and output formats
-        dest_acc: Destination accumulation mode
-
-    Returns:
-        True if the combination is invalid, False otherwise
-    """
-    in_fmt = fmt.input_format
-    out_fmt = fmt.output_format
-
-    # Quasar packer does not support non-Float32 to Float32 conversion when dest_acc=No
-    if (
-        in_fmt != DataFormat.Float32
-        and out_fmt == DataFormat.Float32
-        and dest_acc == DestAccumulation.No
-    ):
-        return True
-
-    # Quasar SFPU with Float32 input and Float16 output requires dest_acc=Yes
-    if (
-        in_fmt == DataFormat.Float32
-        and out_fmt == DataFormat.Float16
-        and dest_acc == DestAccumulation.No
-    ):
-        return True
-
-    return False
-
-
-def generate_sfpu_rsqrt_combinations(
-    formats_list: List[FormatConfig],
-):
-    """
-    Generate SFPU rsqrt test combinations.
-
-    Args: Input-output format pairs
-
-    Returns: List of (format, dest_acc, dest_sync, implied_math_format, input_dimensions) tuples
-    """
-    combinations = []
-
-    dest_sync_modes = (DestSync.Half, DestSync.Full)
-    for fmt in formats_list:
-        in_fmt = fmt.input_format
-
-        dest_acc_modes = (
-            (DestAccumulation.Yes,)
-            if in_fmt.is_32_bit()
-            else (DestAccumulation.No, DestAccumulation.Yes)
-        )
-        for dest_acc in dest_acc_modes:
-            # Skip invalid format combinations for Quasar
-            if _is_invalid_quasar_combination(fmt, dest_acc):
-                continue
-
-            for dest_sync in dest_sync_modes:
-                for implied_math_format in [
-                    ImpliedMathFormat.No,
-                    ImpliedMathFormat.Yes,
-                ]:
-                    for input_dimensions in [[32, 32], [64, 64]]:
-                        combinations.append(
-                            (
-                                fmt,
-                                dest_acc,
-                                dest_sync,
-                                implied_math_format,
-                                input_dimensions,
-                            )
-                        )
-
-    return combinations
-
-
 SFPU_RSQRT_FORMATS = input_output_formats(
     [
         DataFormat.Float16,
@@ -122,13 +43,17 @@ SFPU_RSQRT_FORMATS = input_output_formats(
     ]
 )
 
+SFPU_RSQRT_COMBINATIONS = [
+    (fmt, dest_acc, dest_sync, implied_math_format, input_dimensions)
+    for fmt, dest_acc in generate_sfpu_format_dest_acc_combinations(SFPU_RSQRT_FORMATS)
+    for dest_sync in (DestSync.Half, DestSync.Full)
+    for implied_math_format in [ImpliedMathFormat.No, ImpliedMathFormat.Yes]
+    for input_dimensions in [[32, 32], [64, 64]]
+]
+
 
 @pytest.mark.quasar
-@parametrize(
-    formats_dest_acc_sync_implied_math_input_dims=generate_sfpu_rsqrt_combinations(
-        SFPU_RSQRT_FORMATS
-    ),
-)
+@parametrize(formats_dest_acc_sync_implied_math_input_dims=SFPU_RSQRT_COMBINATIONS)
 def test_sfpu_rsqrt_quasar(formats_dest_acc_sync_implied_math_input_dims):
     """
     Test reciprocal square root (rsqrt) operation on Quasar architecture.
