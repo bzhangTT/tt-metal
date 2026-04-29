@@ -101,8 +101,8 @@ void run_kernel(RUNTIME_PARAMETERS params)
 #endif
     set_up_dest_dvalid_per_thread<dest_dvalid_client::FPU>({dest_dvalid_client::FPU, dest_dvalid_client::PACK});
 
-    const DataFormat src_format = static_cast<DataFormat>(formats.math);
-    _llk_math_srcAB_hw_configure_<IMPLIED_MATH_FORMAT, is_fp32_dest_acc_en>(src_format, src_format);
+    DataFormat src_format = static_cast<DataFormat>(formats.math);
+    _llk_math_srcAB_hw_configure_<IMPLIED_MATH_FORMAT, is_fp32_dest_acc_en, false /*int32*/>(src_format, src_format);
 
     const int num_total_tiles = params.INPUT_NUM_TILES_IN_BLOCK * params.INPUT_NUM_BLOCKS;
     const int tiles_in_block  = params.OUTPUT_NUM_TILES_IN_BLOCK;
