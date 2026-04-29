@@ -57,7 +57,7 @@
 //
 // Current limitation: each table is read as a single page (page 0), so the
 // full table must fit in one ROW_MAJOR page (= innermost dim × dtype_bytes)
-// AND in one 256-byte half of cb_guard (= 64 uint32 elements). Larger tables
+// AND in one 1024-byte half of cb_guard (= 256 uint32 elements). Larger tables
 // need either multi-page reads keyed on the logical index or a bigger cb_guard.
 //
 // If ROUTED_GUARD_ENABLED is not defined, the helpers compile to no-ops.
@@ -67,10 +67,11 @@
 #include <cstdint>
 
 namespace routed_guard_detail {
-// Each table's page is read into its own 256-byte scratch half of cb_guard so
+// Each table's page is read into its own 1024-byte scratch half of cb_guard so
 // both values are resident simultaneously and the second DRAM read cannot
-// stomp on the first's L1 destination.
-constexpr uint32_t kGuardScratchHalfBytes = 256;
+// stomp on the first's L1 destination. 1024 bytes = 256 uint32 elements,
+// matching the DeepSeek V3 global expert count.
+constexpr uint32_t kGuardScratchHalfBytes = 1024;
 }  // namespace routed_guard_detail
 
 #ifdef ROUTED_GUARD_ENABLED
@@ -170,6 +171,11 @@ FORCE_INLINE bool guard_check_wait() {
     const uint32_t token_count = routed_guard_detail::read_page_indexed_u32(counts_accessor, scratch_b, global_idx);
 
     const bool skip = token_count <= curr_expert_iter * expert_iter_length;
+    // DPRINT << "guard_check_wait: local_expert_idx=" << local_expert_idx << " global_idx=" << global_idx
+    //        << " token_count=" << token_count << " curr_expert_iter=" << curr_expert_iter
+    //        << " expert_iter_length=" << expert_iter_length << " skip=" << (int)skip << "\n";
+    // DEVICE_PRINT("global_idx={} token_count={} skip={}\n", global_idx, token_count, (int)skip);
+
     const uint32_t skip_u = skip ? 1u : 0u;
     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, skip_u);
     ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, skip_u);

@@ -25,10 +25,10 @@ using tt::tt_metal::CoreRangeSet;
 
 namespace {
 
-// Guard scratch CB: 512 bytes (two 256-byte halves, one per table). Same size and
-// role as in the matmul fork. Must not collide with c_0 / c_2.
+// Guard scratch CB: 2048 bytes (two 1024-byte halves, 256 uint32 elements each).
+// Same role as in the matmul fork. Must not collide with c_0 / c_2.
 constexpr uint32_t kGuardCbIndex = tt::CBIndex::c_11;
-constexpr uint32_t kGuardCbBytes = 512;
+constexpr uint32_t kGuardCbBytes = 2048;
 
 }  // namespace
 
@@ -108,8 +108,8 @@ RoutedUnaryProgramFactory::cached_program_t RoutedUnaryProgramFactory::create(
             .set_tile_dims(out_cb_index, out_tile_shape);
     auto cb_out = tt_metal::CreateCircularBuffer(program, all_cores, out_cb_config);
 
-    // cb_guard (c_11): scratch for DRAM reads of the two guard tables. 512 bytes
-    // split into two 256-byte halves (one per table), mirroring the matmul fork.
+    // cb_guard (c_11): scratch for DRAM reads of the two guard tables. 2048 bytes
+    // split into two 1024-byte halves (256 uint32 elements each), mirroring the matmul fork.
     auto guard_cb_config = CircularBufferConfig(kGuardCbBytes, {{kGuardCbIndex, DataFormat::Float16_b}})
                                .set_page_size(kGuardCbIndex, kGuardCbBytes);
     auto cb_guard = tt_metal::CreateCircularBuffer(program, all_cores, guard_cb_config);

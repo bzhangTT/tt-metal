@@ -347,15 +347,11 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
     auto in1_mcast_sender_semaphore_id = tt_metal::CreateSemaphore(program, all_cores, INVALID);
     auto in1_mcast_receiver_semaphore_id = tt_metal::CreateSemaphore(program, all_cores, INVALID);
 
-    // Guard CB — 512 bytes of L1 used as DRAM-read scratch by guard.h. Split
-    // into two 256-byte halves: the kernel reads one page of global_expert_idx_table
-    // into the first half and one page of expert_token_counts into the second half,
-    // then indexes into each half. 256 bytes is enough to hold a ROW_MAJOR uint32
-    // buffer of up to 64 elements (one page = innermost-dim row); for larger tables
-    // this CB size needs to grow or the kernel needs page-by-page reads.
+    // Guard CB — 2048 bytes of L1 used as DRAM-read scratch by guard.h. Split
+    // into two 1024-byte halves (256 uint32 elements each), one per table.
     // CBIndex::c_11 is not used by any other CB in this factory.
     constexpr uint32_t guard_cb_index = tt::CBIndex::c_11;
-    constexpr uint32_t kGuardCbBytes = 512;
+    constexpr uint32_t kGuardCbBytes = 2048;
     auto cb_guard = tt_metal::CreateCircularBuffer(
         program,
         all_cores,
