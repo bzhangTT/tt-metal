@@ -18,7 +18,6 @@
 #   Float variant: Float16_b, Float32, MxFp8R, MxFp8P (Float16 excluded — see below)
 #   Int32 variant: Int32 (IS_UNSIGNED=true deferred — UInt32 not in VALID_QUASAR_DEST_REG_FORMATS)
 
-from dataclasses import dataclass
 from typing import List
 
 import pytest
@@ -41,49 +40,13 @@ from helpers.test_variant_parameters import (
     DEST_INDEX,
     DEST_SYNC,
     IMPLIED_MATH_FORMAT,
+    IS_MAX_OP,
     NUM_FACES,
     TEST_FACE_DIMS,
     TILE_COUNT,
     UNPACKER_ENGINE_SEL,
-    TemplateParameter,
 )
 from helpers.utils import passed_test, tolerances
-
-# ─── Custom template parameters ───────────────────────────────────────────────
-
-
-@dataclass
-class IS_MAX_OP_PARAM(TemplateParameter):
-    """Compile-time flag: true for element-wise max, false for min."""
-
-    is_max_op: bool = True
-
-    def convert_to_cpp(self) -> str:
-        return f"constexpr bool IS_MAX_OP = {str(self.is_max_op).lower()};"
-
-
-@dataclass
-class IS_INT32_OP_PARAM(TemplateParameter):
-    """Compile-time flag: true for int32 variant, false for float variant."""
-
-    is_int32_op: bool = False
-
-    def convert_to_cpp(self) -> str:
-        return f"constexpr bool IS_INT32_OP = {str(self.is_int32_op).lower()};"
-
-
-@dataclass
-class IS_FP16A_PARAM(TemplateParameter):
-    """Compile-time flag: true when input format is IEEE Float16 (FP16A, 5-bit exponent).
-    Enables explicit FP16A SFPLOAD mode to fix SFPSWAP comparison for negative float16 pairs
-    in 16-bit SFPU mode where DEFAULT load mode doesn't expand Float16 to proper FP32.
-    """
-
-    is_fp16a: bool = False
-
-    def convert_to_cpp(self) -> str:
-        return f"constexpr bool IS_FP16A = {str(self.is_fp16a).lower()};"
-
 
 # ─── Input preparation ────────────────────────────────────────────────────────
 
@@ -218,7 +181,7 @@ SFPU_BINARY_MAX_MIN_INT32_FORMATS = [
 def generate_binary_max_min_float_combinations(formats_list: List[FormatConfig]):
     """
     Generate (format, dest_acc, implied_math_format, is_max_op, input_dimensions) tuples
-    for the float variant (IS_INT32_OP=false).
+    for the float variant (non-Int32 formats).
 
     §7d Yes-count: 5 pairs. dest_acc filtered per SFPU bit-width rule.
     """
@@ -260,7 +223,7 @@ def generate_binary_max_min_float_combinations(formats_list: List[FormatConfig])
 
 def generate_binary_max_min_int32_combinations(formats_list: List[FormatConfig]):
     """
-    Generate combinations for the int32 variant (IS_INT32_OP=true, IS_UNSIGNED=false).
+    Generate combinations for the int32 variant (Int32 input, IS_UNSIGNED=false).
 
     §7d Yes-count: 1 pair. Int32 requires dest_acc=Yes (32-bit Dest).
     """
@@ -381,12 +344,7 @@ def test_binary_max_min_float_quasar(formats_dest_acc_implied_math_is_max_input_
         "sources/quasar/sfpu_binary_max_min_quasar_test.cpp",
         formats,
         templates=[
-            IS_MAX_OP_PARAM(is_max_op=is_max_op),
-            IS_INT32_OP_PARAM(is_int32_op=False),
-            # IS_FP16A: only relevant when input is IEEE Float16 (FP16A, 5-bit exponent)
-            # in 16-bit Dest mode. Float16 is currently excluded from the matrix, so this
-            # is always false here, but the compile-time flag is kept for completeness.
-            IS_FP16A_PARAM(is_fp16a=(formats.input_format == DataFormat.Float16)),
+            IS_MAX_OP(is_max_op=is_max_op),
             IMPLIED_MATH_FORMAT(implied_math_format),
             DATA_COPY_TYPE(DataCopyType.A2D),
             UNPACKER_ENGINE_SEL(
@@ -522,9 +480,7 @@ def test_binary_max_min_int32_quasar(formats_dest_acc_is_max_input_dims):
         "sources/quasar/sfpu_binary_max_min_quasar_test.cpp",
         formats,
         templates=[
-            IS_MAX_OP_PARAM(is_max_op=is_max_op),
-            IS_INT32_OP_PARAM(is_int32_op=True),
-            IS_FP16A_PARAM(is_fp16a=False),
+            IS_MAX_OP(is_max_op=is_max_op),
             IMPLIED_MATH_FORMAT(ImpliedMathFormat.No),
             DATA_COPY_TYPE(DataCopyType.A2D),
             UNPACKER_ENGINE_SEL(

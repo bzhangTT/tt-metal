@@ -142,7 +142,15 @@ void run_kernel(RUNTIME_PARAMETERS params)
     // SFPU computes max/min(Dest[DST_INDEX+0], Dest[DST_INDEX+1]) → Dest[DST_INDEX+2].
     // The 3-operand offsets are relative to dst_tile_index (set as the Dest base
     // by _llk_math_eltwise_unary_sfpu_start_).
-    if constexpr (IS_INT32_OP)
+    //
+    // The int32-variant and the FP16A SFPLOAD mode are selected from the runtime
+    // data format (formats.math); only the IS_MAX_OP choice stays compile-time
+    // because it isn't derivable from the format.
+    const DataFormat math_fmt = static_cast<DataFormat>(formats.math);
+    const bool is_int32       = (math_fmt == DataFormat::Int32);
+    const bool is_fp16a       = (math_fmt == DataFormat::Float16);
+
+    if (is_int32)
     {
         binary_max_min_int32_init<IS_MAX_OP, false /*IS_UNSIGNED*/>();
         _llk_math_eltwise_unary_sfpu_params_(
@@ -155,12 +163,24 @@ void run_kernel(RUNTIME_PARAMETERS params)
     else
     {
         binary_max_min_init<IS_MAX_OP>();
-        _llk_math_eltwise_unary_sfpu_params_(
-            ckernel::sfpu::calculate_binary_max_min<IS_MAX_OP, IS_FP16A, 8 /*ITERATIONS*/>,
-            params.DST_INDEX,
-            /* dst_index_in0 */ 0U,
-            /* dst_index_in1 */ 1U,
-            /* dst_index_out */ 2U);
+        if (is_fp16a)
+        {
+            _llk_math_eltwise_unary_sfpu_params_(
+                ckernel::sfpu::calculate_binary_max_min<IS_MAX_OP, true /*IS_FP16A*/, 8 /*ITERATIONS*/>,
+                params.DST_INDEX,
+                /* dst_index_in0 */ 0U,
+                /* dst_index_in1 */ 1U,
+                /* dst_index_out */ 2U);
+        }
+        else
+        {
+            _llk_math_eltwise_unary_sfpu_params_(
+                ckernel::sfpu::calculate_binary_max_min<IS_MAX_OP, false /*IS_FP16A*/, 8 /*ITERATIONS*/>,
+                params.DST_INDEX,
+                /* dst_index_in0 */ 0U,
+                /* dst_index_in1 */ 1U,
+                /* dst_index_out */ 2U);
+        }
     }
 
     _llk_math_set_dvalid_<p_cleardvalid::SFPU, dest_sync>();
