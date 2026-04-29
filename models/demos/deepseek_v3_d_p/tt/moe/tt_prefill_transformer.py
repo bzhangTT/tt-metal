@@ -112,6 +112,7 @@ class TtPrefillTransformer(LightweightModule):
         shared_expert_activations_dtype=ttnn.bfloat16,
         shared_expert_weights_dtype=ttnn.bfloat8_b,
         weight_cache_path: Optional[Path] = None,
+        num_dispatch_subgroups: int = 1,
     ):
         super().__init__()
         self.mesh_device = mesh_device
@@ -174,6 +175,7 @@ class TtPrefillTransformer(LightweightModule):
                 shared_expert_activations_dtype=shared_expert_activations_dtype,
                 shared_expert_weights_dtype=shared_expert_weights_dtype,
                 weight_cache_path=weight_cache_path,
+                num_dispatch_subgroups=num_dispatch_subgroups,
             )
             self.layers.append(layer)
 
