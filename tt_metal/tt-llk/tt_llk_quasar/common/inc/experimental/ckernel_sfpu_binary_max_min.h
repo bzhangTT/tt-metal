@@ -55,8 +55,8 @@ inline void _calculate_binary_max_min_sfp_rows_(const std::uint32_t offset0, con
     TT_SFPLOAD(p_sfpu::LREG0, load_mode, ADDR_MOD_7, 0 /* done */, offset0 + (row_index << 1)); // load FP row from in0
     TT_SFPLOAD(p_sfpu::LREG1, load_mode, ADDR_MOD_7, 0 /* done */, offset1 + (row_index << 1)); // load FP row from in1
     // VEC_MIN_MAX: VD=LREG0 → min, VC=LREG1 → max (sign-magnitude order = FP32 total order)
-    TTI_SFPSWAP(0 /* imm12 */, p_sfpu::LREG1, p_sfpu::LREG0, sfpi::SFPSWAP_MOD1_VEC_MIN_MAX);                        // 2-cycle; LREG0=min, LREG1=max
-    TTI_SFPNOP(0 /* srcs_wr_done */, 0 /* srcs_rd_done */, 0 /* dest_done */);                                       // post-SFPSWAP stall avoidance
+    TTI_SFPSWAP(0 /* imm12 */, p_sfpu::LREG1, p_sfpu::LREG0, sfpi::SFPSWAP_MOD1_VEC_MIN_MAX);                                // 2-cycle; LREG0=min, LREG1=max
+    TTI_SFPNOP(0 /* srcs_wr_done */, 0 /* srcs_rd_done */, 0 /* dest_done */);                                               // post-SFPSWAP stall avoidance
     TT_SFPSTORE(IS_MAX_OP ? p_sfpu::LREG1 : p_sfpu::LREG0, load_mode, ADDR_MOD_7, 0 /* done */, offset2 + (row_index << 1)); // store max (LREG1) or min (LREG0)
 }
 
