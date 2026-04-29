@@ -6,6 +6,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <string>
 
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/dispatch_core_common.hpp>
@@ -59,6 +61,12 @@ struct JitDeviceConfig {
 // call time.
 JitDeviceConfig create_jit_device_config(ChipId device_id, uint8_t num_hw_cqs);
 
-// TODO: Add a factory method to create JitDeviceConfig from a YAML profile
+// enumerate_jit_device_configs walks `core_descriptor_path` YAML; `soc_descriptor_path` must be the
+// matching SoC descriptor YAML used to derive base DRAM bank count (dram_views section).
+void enumerate_jit_device_configs(
+    tt::ARCH arch,
+    const std::string& core_descriptor_path,
+    const std::string& soc_descriptor_path,
+    const std::function<void(const JitDeviceConfig&)>& callback);
 
 }  // namespace tt::tt_metal
