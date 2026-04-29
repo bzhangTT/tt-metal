@@ -405,7 +405,7 @@ class TtRoutedExpert(LightweightModule):
 
         return tt_weight
 
-    def _bh_expert_ffn(
+    def _looped_expert_ffn(
         self,
         tokens: ttnn.Tensor,
         out: ttnn.Tensor,
@@ -416,16 +416,28 @@ class TtRoutedExpert(LightweightModule):
         expert_token_counts: Optional[ttnn.Tensor] = None,
     ) -> None:
         """
-        Blackhole chunked expert FFN: splits ``tokens`` into
-        ``self.FIXED_EXPERT_LENGTH``-sized chunks and dispatches each chunk
-        through the experimental routed_expert_ffn op, writing results into the
-        matching slice of ``out``.
+        Loop one expert's FFN over fixed-length chunks of ``tokens``.
 
-        Reads ``self.global_expert_idx_table`` (set at __init__). When both
-        that and ``expert_token_counts`` are non-None, the op routes through
-        the forked device op whose per-kernel guard skips iff
-        ``expert_token_counts[global_expert_idx_table[local_expert_idx]]
-        <= curr_expert_iter * FIXED_EXPERT_LENGTH`` — no device-to-host sync.
+        Splits ``tokens`` along the token dim (-2) into ``ceil(num_tokens /
+        FIXED_EXPERT_LENGTH)`` chunks and calls ``routed_expert_ffn`` once per
+        chunk, writing each result into the matching slice of ``out`` via
+        ``ttnn.narrow``. The final chunk is short when ``num_tokens`` isn't a
+        multiple of ``FIXED_EXPERT_LENGTH``.
+
+        Architecture-agnostic: nothing here is BH-specific. The chunked loop
+        is what enables the per-iteration guard — each call passes
+        ``curr_expert_iter`` and ``expert_iter_length`` so the device-side
+        kernel can compare them against
+        ``expert_token_counts[global_expert_idx_table[local_expert_idx]]``
+        and skip iterations past the expert's actual token count, without
+        any device-to-host sync.
+
+        When ``self.global_expert_idx_table`` (set at __init__) and
+        ``expert_token_counts`` are both non-None, the call routes through
+        the forked routed-matmul / routed-unary device ops with the guard
+        active. When either is None, ``routed_expert_ffn`` falls back to
+        plain ttnn::matmul and the chunking still happens but every chunk
+        runs unconditionally.
         """
         # Tokens can arrive as 2D (num_tokens, emb_dim) from the extract op, or
         # 3D (1, num_tokens, emb_dim) from the narrow-based flow. The token
@@ -465,7 +477,7 @@ class TtRoutedExpert(LightweightModule):
         """
         Forward pass. Extracts per-expert token slices from the shared dispatch
         buffer using the deepseek_prefill.extract op, runs the chunked guarded
-        FFN per expert (``_bh_expert_ffn``), and writes each expert's result
+        FFN per expert (``_looped_expert_ffn``), and writes each expert's result
         back into the buffer via deepseek_prefill.insert.
 
         ``self.global_expert_idx_table`` (set at __init__) together with
@@ -510,7 +522,7 @@ class TtRoutedExpert(LightweightModule):
             # into it in place, slice by slice.
             out = ttnn.empty_like(tokens)
 
-            self._bh_expert_ffn(
+            self._looped_expert_ffn(
                 tokens,
                 out,
                 self.gate_projs[local_expert],
