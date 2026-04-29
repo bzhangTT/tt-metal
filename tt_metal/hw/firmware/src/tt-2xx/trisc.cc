@@ -112,14 +112,17 @@ void init_sync_registers() {
 extern "C" uint32_t _start1() {
     configure_csr();
     uint32_t hartid = internal_::get_hw_thread_idx();
+    uint32_t neo_id = csr_read<CSR::NEO_ID>();
     DPRINT << "hartid: " << hartid << ENDL();
     DEVICE_PRINT("hartid: {}\n", hartid);
     volatile tt_l1_ptr uint8_t* const trisc_run = &((tt_l1_ptr mailboxes_t*)(MEM_MAILBOX_BASE + MEM_L1_UNCACHED_BASE))
                                                        ->subordinate_sync.map[hartid];  // first entry is for NCRISC
     WAYPOINT("I");
 
-    extern uint32_t __ldm_data_start[];
-    do_crt1(__ldm_data_start);
+    if (neo_id == 0) {
+        extern uint32_t __ldm_data_start[];
+        do_crt1(__ldm_data_start);
+    }
     extern uint32_t __ldm_tdata_init[];
     do_thread_crt1(__ldm_tdata_init);
     // Initialize GPRs to all 0s
@@ -132,7 +135,7 @@ extern "C" uint32_t _start1() {
     *trisc_run = RUN_SYNC_MSG_DONE;
 
     DeviceProfilerInit();
-    DPRINT << "TRISC-FW: initialized" << ENDL();
+    //    DPRINT << "TRISC-FW: initialized" << ENDL();
     DEVICE_PRINT("TRISC-FW: initialized\n");
     while (1) {
         WAYPOINT("W");
