@@ -62,11 +62,28 @@ INFINITEBENCH_SUBSET_NAMES = {"passkey", "kv_retrieval", "longdialogue_qa_eng", 
     ["json_prompts", "abc_1k", "random", "passkey", "kv_retrieval", "longdialogue_qa_eng", "longbook_qa_eng"],
 )
 @pytest.mark.parametrize("pcc_validation", [True, False], ids=["pcc", "smoke"])
-@pytest.mark.parametrize("isl_total", [1024, 6400])
+# isl_total constraint: seq_len_per_chip = isl_total / sp_factor must be
+# divisible by 64 (the hardcoded 8x8 bincount core grid in
+# tt_moe_routing_setup.py:222). Equivalently, isl_total must be a multiple
+# of 64 * sp_factor. The constraint fires whenever an MoE layer's routing
+# setup runs (so any num_layers >= first_k_dense_replace + 1 = 4).
+#
+# Per-mesh validity for the Quad-relevant values below:
+#                       2x4 (sp=2)    8x4 (sp=8)        32x4 (sp=32)
+#   1024                ✓ (512)       ✓ (128)           ✗ (per_chip=32, < 64)
+#   2048                ✓ (1024)      ✓ (256)           ✓ (64, 32x4 minimum)
+#   25 * 1024 = 25600   ✓ (12800)     ✓ (3200)          ✗ (800 %64 =32)
+#   100 * 1024          ✓ (51200)     ✓ (12800)         ✓ (3200, matches test_mla.py)
+#
+# 1024 and 25600 do NOT fit 32x4. main's test_mla.py and
+# test_mla_disaggregation.py use 100*1024 / 128*1024 specifically to
+# satisfy the per-chip-mod-64 constraint at sp_factor=32.
+@pytest.mark.parametrize("isl_total", [1024, 2048, 6400, 100 * 1024])
 @pytest.mark.parametrize(
     "num_layers",
     [
         6,
+        8,
         12,
         pytest.param(61, marks=pytest.mark.skipif(not is_galaxy(), reason="Testing entire-prefill only on Galaxy")),
     ],
@@ -118,6 +135,22 @@ INFINITEBENCH_SUBSET_NAMES = {"passkey", "kv_retrieval", "longdialogue_qa_eng", 
             4,
             marks=pytest.mark.requires_mesh_topology(mesh_shape=(8, 4), topology="mesh-8x4"),
             id="mesh-8x4-subgroups-4",
+        ),
+        # Multi-host Quad. No requires_mesh_topology: that marker uses local
+        # ttnn.get_num_devices() (32) and would always skip the 128-device
+        # 32x4 case. is_galaxy() skipif on num_layers=61 and the mesh_device
+        # fixture handle the gating; under tt-run, ttnn.using_distributed_env()
+        # is True so the fixture's "more devices than available" skip no-ops.
+        pytest.param(
+            (32, 4),
+            {
+                "fabric_config": ttnn.FabricConfig.FABRIC_1D,
+                "fabric_router_config": create_fabric_router_config(max_payload_size=DeepSeekV3Config.EMB_SIZE),
+            },
+            1,
+            ttnn.Topology.Linear,
+            4,
+            id="mesh-32x4-subgroups-4",
         ),
     ],
     indirect=["mesh_device", "device_params"],
