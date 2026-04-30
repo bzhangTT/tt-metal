@@ -13,6 +13,7 @@
 #include "device/ternary_device_operation.hpp"
 #include "device/ternary_op_utils.hpp"
 #include "ttnn/operations/copy/typecast/typecast.hpp"
+#include "ttnn/operations/core/core.hpp"
 #include "ternary_composite_op.hpp"
 
 using namespace ttnn::operations::ternary;
@@ -398,6 +399,29 @@ Tensor lerp(
         ternary_utils::determine_output_dtype(output, input.dtype()),
         ternary_utils::determine_memory_config(memory_config, input.memory_config()),
         output,
+        std::nullopt);
+}
+
+Tensor snake_beta(
+    const Tensor& input_tensor,
+    const Tensor& alpha,
+    const Tensor& beta,
+    const std::optional<MemoryConfig>& memory_config,
+    const std::optional<Tensor>& optional_output_tensor) {
+    // Promote alpha/beta to rank 4 with leading 1s so the ternary broadcast path
+    // (ROW_BCAST / OUTER_BCAST) sees a well-formed tile. Tile-padded 1D tensors
+    // would otherwise leave non-row-0 entries as zero pad, producing 1/0 in the
+    // reciprocal step.
+    auto alpha_4d = (alpha.logical_shape().rank() < 4) ? ttnn::unsqueeze_to_4D(alpha) : alpha;
+    auto beta_4d = (beta.logical_shape().rank() < 4) ? ttnn::unsqueeze_to_4D(beta) : beta;
+    return ttnn::prim::ternary(
+        TernaryOpType::SNAKE_BETA,
+        input_tensor,
+        alpha_4d,
+        beta_4d,
+        ternary_utils::determine_output_dtype(optional_output_tensor, input_tensor.dtype()),
+        ternary_utils::determine_memory_config(memory_config, input_tensor.memory_config()),
+        optional_output_tensor,
         std::nullopt);
 }
 
