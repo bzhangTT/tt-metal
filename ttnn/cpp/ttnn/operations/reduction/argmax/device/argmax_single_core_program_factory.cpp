@@ -142,6 +142,24 @@ ArgMaxSingleCoreProgramFactory::cached_program_t ArgMaxSingleCoreProgramFactory:
     auto [num_cores, all_cores, unused_1, unused_2, unused_3, unused_4] =
         tt::tt_metal::split_work_to_cores(grid_size, num_units);
 
+    TT_FATAL(num_cores > 0, "Argmax single-core split requires at least one core ");
+    TT_FATAL(
+        all_cores.num_cores() == num_cores,
+        "Argmax single-core split mismatch: num_cores={} all_cores.num_cores()={}",
+        num_cores,
+        all_cores.num_cores());
+
+    {
+        const auto device_core_grid = device->compute_with_storage_grid_size();
+        const tt::tt_metal::CoreRangeSet device_worker_grid =
+            tt::tt_metal::num_cores_to_corerangeset(device_core_grid.x * device_core_grid.y, device_core_grid, false);
+        TT_FATAL(
+            device_worker_grid.contains(all_cores),
+            "Argmax single-core program core grid {} must be contained in device grid {}",
+            all_cores,
+            device_worker_grid);
+    }
+
     const tt::DataFormat input_data_format = tt::tt_metal::datatype_to_dataformat_converter(input.dtype());
     const tt::DataFormat output_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
     const auto [src_page_size, dst_page_size] = get_page_sizes_single_core(input, output, keepdim, reduce_all);
@@ -176,6 +194,11 @@ ArgMaxSingleCoreProgramFactory::cached_program_t ArgMaxSingleCoreProgramFactory:
 
     // Runtime args
     const auto cores = grid_to_cores(num_cores, grid_size.x, grid_size.y, false);
+    TT_FATAL(
+        cores.size() == num_cores,
+        "Argmax single-core resolved core list size {} must match split num_cores {}",
+        cores.size(),
+        num_cores);
     for (const auto& core : cores) {
         tt::tt_metal::SetRuntimeArgs(program, reader_kernel_id, core, {src_buffer->address(), dst_buffer->address()});
     }
