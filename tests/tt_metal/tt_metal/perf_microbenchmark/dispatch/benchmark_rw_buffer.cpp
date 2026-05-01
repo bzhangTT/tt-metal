@@ -25,6 +25,7 @@
 #include <tt-metalium/vector_aligned.hpp>
 #include <tt-logger/tt-logger.hpp>
 #include <benchmark/benchmark.h>
+#include <tracy/Tracy.hpp>
 #include "context/metal_context.hpp"
 #include "mesh_coord.hpp"
 #include <llrt/tt_cluster.hpp>
@@ -65,6 +66,7 @@ static constexpr uint32_t ElementSize = sizeof(ElementType);
 static const std::vector<int64_t> PAGE_SIZE_ARGS = benchmark::CreateRange(32, 2048, 2);
 static constexpr uint64_t max_transfer_size{8 * GB};
 static const std::vector<int64_t> TRANSFER_SIZE_ARGS = {
+    512 * MB,
     1 * GB,
     2 * GB,
     4 * GB,
@@ -352,15 +354,37 @@ static void BM_read(benchmark::State& state, const std::shared_ptr<MeshDevice>& 
         buffer_type == BufferType::DRAM ? "DRAM" : "L1",
         device_id);
 
-    auto device_buffer = MeshBuffer::create(
-        ReplicatedBufferConfig{transfer_size},
-        DeviceLocalBufferConfig{.page_size = page_size, .buffer_type = buffer_type},
-        mesh_device.get());
-    std::vector<ElementType> host_buffer;
+    std::shared_ptr<MeshBuffer> device_buffer;
+    {
+        ZoneScopedN("BM_read.setup.create_mesh_buffer");
+        device_buffer = MeshBuffer::create(
+            ReplicatedBufferConfig{transfer_size},
+            DeviceLocalBufferConfig{.page_size = page_size, .buffer_type = buffer_type},
+            mesh_device.get());
+    }
+    std::vector<ElementType> host_buffer(transfer_size / ElementSize);
 
+#if defined(TRACY_ENABLE)
+    uint64_t benchmark_iteration = 0;
+#endif
     for ([[maybe_unused]] auto _ : state) {
+        ZoneScopedN("BM_read.iteration");
+#if defined(TRACY_ENABLE)
+        auto zone_text = fmt::format(
+            "page_size={}, transfer_size={}, buffer_type={}, device_id={}, benchmark_iteration={}",
+            page_size,
+            transfer_size,
+            buffer_type == BufferType::DRAM ? "DRAM" : "L1",
+            device_id,
+            benchmark_iteration++);
+        ZoneText(zone_text.data(), zone_text.size());
+#endif
+
         // EnqueueReadMeshBuffer cannot read from a replicated buffer yet, have to use ReadShard
-        ReadShard(mesh_device->mesh_command_queue(), host_buffer, device_buffer, MeshCoordinate(0, 0), true);
+        {
+            ZoneScopedN("BM_read.iteration.ReadShard.blocking");
+            ReadShard(mesh_device->mesh_command_queue(), host_buffer, device_buffer, MeshCoordinate(0, 0), true);
+        }
     }
 
     state.SetBytesProcessed(transfer_size * state.iterations());
@@ -386,8 +410,13 @@ static void BM_read_pinned_memory(benchmark::State& state, const std::shared_ptr
         mesh_device.get());
 
     // Allocate destination host buffer with 16-byte alignment
-    auto dst_storage = std::make_shared<vector_aligned<std::uint8_t>>(static_cast<std::size_t>(transfer_size), 0);
-    void* aligned_ptr = reinterpret_cast<void*>(dst_storage->data());
+    std::shared_ptr<vector_aligned<std::uint8_t>> dst_storage;
+    void* aligned_ptr = nullptr;
+    {
+        ZoneScopedN("BM_read_pinned_memory.setup.allocate_dst_storage");
+        dst_storage = std::make_shared<vector_aligned<std::uint8_t>>(static_cast<std::size_t>(transfer_size), 0);
+        aligned_ptr = reinterpret_cast<void*>(dst_storage->data());
+    }
 
     // Create HostBuffer on top of aligned memory
     HostBuffer host_buffer(

@@ -5,6 +5,8 @@
 #include <tt_stl/fmt.hpp>
 #include "mesh_command_queue_base.hpp"
 
+#include <tracy/Tracy.hpp>
+
 #include <mesh_device.hpp>
 #include <mesh_event.hpp>
 #include <api/tt-metalium/experimental/pinned_memory.hpp>
@@ -321,6 +323,7 @@ void MeshCommandQueueBase::enqueue_read_shards_nolock(
     const std::vector<distributed::ShardDataTransfer>& shard_data_transfers,
     const std::shared_ptr<MeshBuffer>& buffer,
     bool blocking) {
+    ZoneScopedN("MeshCQ.enqueue_read_shards_nolock");
     // TODO: #17215 - this API is used by TTNN, as it currently implements rich ND sharding API for multi-devices.
     // In the long run, the multi-device sharding API in Metal will change, and this will most likely be replaced.
     std::unordered_map<IDevice*, uint32_t> num_txns_per_device = {};
@@ -329,16 +332,22 @@ void MeshCommandQueueBase::enqueue_read_shards_nolock(
         if (mesh_device_->impl().is_local(shard_data_transfer.shard_coord())) {
             auto pinned_memory = experimental::ShardDataTransferGetPinnedMemory(shard_data_transfer);
             has_pinned_memory = has_pinned_memory || pinned_memory != nullptr;
-            this->read_shard_from_device(
-                *buffer,
-                shard_data_transfer.shard_coord(),
-                shard_data_transfer.host_data(),
-                pinned_memory,
-                shard_data_transfer.region(),
-                num_txns_per_device);
+            {
+                ZoneScopedN("MeshCQ.read_shard_from_device");
+                this->read_shard_from_device(
+                    *buffer,
+                    shard_data_transfer.shard_coord(),
+                    shard_data_transfer.host_data(),
+                    pinned_memory,
+                    shard_data_transfer.region(),
+                    num_txns_per_device);
+            }
         }
     }
-    this->submit_memcpy_request(num_txns_per_device, blocking);
+    {
+        ZoneScopedN("MeshCQ.submit_memcpy_request");
+        this->submit_memcpy_request(num_txns_per_device, blocking);
+    }
 
     if (!blocking && has_pinned_memory) {
         auto event = this->enqueue_record_event_to_host_nolock();
@@ -357,6 +366,7 @@ void MeshCommandQueueBase::enqueue_read_shards(
     const std::vector<distributed::ShardDataTransfer>& shard_data_transfers,
     const std::shared_ptr<MeshBuffer>& mesh_buffer,
     bool blocking) {
+    ZoneScopedN("MeshCQ.enqueue_read_shards");
     auto lock = lock_api_function_();
     this->enqueue_read_shards_nolock(shard_data_transfers, mesh_buffer, blocking);
 }

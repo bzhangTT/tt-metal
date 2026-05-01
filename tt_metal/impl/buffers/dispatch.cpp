@@ -1372,6 +1372,7 @@ ShardedBufferReadDispatchParams initialize_sharded_buf_read_dispatch_params(
 
 BufferReadDispatchParams initialize_interleaved_buf_read_dispatch_params(
     Buffer& buffer, uint32_t cq_id, tt::stl::Span<const uint32_t> expected_num_workers_completed) {
+    ZoneScopedN("buffer_read.init_interleaved_params");
     auto root_buffer = buffer.root_buffer();
     const BufferRegion region = buffer.root_buffer_region();
     IDevice* device = root_buffer->device();
@@ -1398,6 +1399,7 @@ void issue_read_buffer_dispatch_command_sequence(
     T& dispatch_params,
     tt::stl::Span<const SubDeviceId> sub_device_ids,
     CoreType /*dispatch_core_type*/) {
+    ZoneScopedN("buffer_read.issue_read_dispatch_command_sequence");
     if (tt::tt_metal::GraphTracker::instance().hook_read_from_device(&buffer)) {
         return;
     }
@@ -1547,6 +1549,7 @@ void copy_interleaved_buffer_to_completion_queue(
     CoreType dispatch_core_type,
     void* dst,
     const std::shared_ptr<experimental::PinnedMemory>& pinned_memory) {
+    ZoneScopedN("buffer_read.copy_interleaved_to_completion_queue");
     if (dispatch_params.total_pages_to_read > 0) {
         // Only 8 bits are assigned for the page offset in CQPrefetchRelayPagedCmd
         // To handle larger page offsets move bank base address up and update page offset to be relative to the new

@@ -19,6 +19,7 @@
 #include <tt-metalium/mesh_trace_id.hpp>
 #include <tt-metalium/mesh_workload.hpp>
 #include <tt-metalium/sub_device_types.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace tt::tt_metal {
 class Program;
@@ -53,6 +54,7 @@ void ReadShard(
     const std::shared_ptr<MeshBuffer>& mesh_buffer,
     const MeshCoordinate& coord,
     bool blocking = true) {
+    ZoneScopedN("distributed::ReadShard");
     // TODO: #26591 - `is_local` Handling should be done under `MeshCommandQueue`.
     // Tracking removal of free function APIs in this file in this issue.
     auto* mesh_device = mesh_cq.device();
@@ -61,9 +63,21 @@ void ReadShard(
     }
 
     auto* shard = mesh_buffer->get_device_buffer(coord);
-    dst.resize(shard->page_size() * shard->num_pages() / sizeof(DType));
+    {
+        ZoneScopedN("distributed::ReadShard.resize_dst");
+        // log current dst size vs expected size
+        log_debug(
+            LogTest,
+            "dst size: {}, expected size: {}",
+            dst.size(),
+            shard->page_size() * shard->num_pages() / sizeof(DType));
+        dst.resize(shard->page_size() * shard->num_pages() / sizeof(DType));
+    }
     std::vector<ShardDataTransfer> shard_data_transfers = {ShardDataTransfer{coord}.host_data(dst.data())};
-    mesh_cq.enqueue_read_shards(shard_data_transfers, mesh_buffer, blocking);
+    {
+        ZoneScopedN("distributed::ReadShard.enqueue_read_shards");
+        mesh_cq.enqueue_read_shards(shard_data_transfers, mesh_buffer, blocking);
+    }
 }
 
 template <typename DType>

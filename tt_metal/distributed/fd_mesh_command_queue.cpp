@@ -536,8 +536,11 @@ void FDMeshCommandQueue::finish_nolock(tt::stl::Span<const SubDeviceId> sub_devi
     auto event = this->enqueue_record_event_to_host_nolock(sub_device_ids);
 
     std::unique_lock<std::mutex> lock(reads_processed_cv_mutex_);
-    reads_processed_cv_.wait(
-        lock, [this] { return num_outstanding_reads_.load() == 0 || thread_exception_state_.load(); });
+    {
+        ZoneScopedN("FDMeshCQ.finish_nolock.wait_reads_processed");
+        reads_processed_cv_.wait(
+            lock, [this] { return num_outstanding_reads_.load() == 0 || thread_exception_state_.load(); });
+    }
     auto& sub_device_cq_owner = cq_shared_state_->sub_device_cq_owner;
     for (const auto& sub_device_id : buffer_dispatch::select_sub_device_ids(mesh_device_, sub_device_ids)) {
         sub_device_cq_owner[*sub_device_id].finished(this->id_);
@@ -610,6 +613,7 @@ void FDMeshCommandQueue::read_shard_from_device(
     const std::optional<BufferRegion>& region,
     std::unordered_map<IDevice*, uint32_t>& num_txns_per_device,
     tt::stl::Span<const SubDeviceId> sub_device_ids) {
+    ZoneScopedN("FDMeshCQ.read_shard_from_device");
     if (!mesh_device_->impl().is_local(device_coord)) {
         return;
     }
@@ -629,40 +633,43 @@ void FDMeshCommandQueue::read_shard_from_device(
     // Reading from device would clobber prefetcher cache, so reset it now
     this->reset_prefetcher_cache_manager();
 
-    if (is_sharded(shard_view->buffer_layout())) {
-        auto dispatch_params = buffer_dispatch::initialize_sharded_buf_read_dispatch_params(
-            *shard_view, id_, expected_num_workers_completed_);
-        const auto& cores = dispatch_params.buffer_page_mapping->all_cores;
-        for (uint32_t core_id = 0; core_id < shard_view->num_cores(); ++core_id) {
-            for (const auto& core_page_mapping : dispatch_params.buffer_page_mapping->core_page_mappings[core_id]) {
-                buffer_dispatch::copy_sharded_buffer_from_core_to_completion_queue(
-                    core_id,
-                    core_page_mapping,
-                    *shard_view,
-                    dispatch_params,
-                    sub_device_ids,
-                    cores[core_id],
-                    this->dispatch_core_type());
-                if (dispatch_params.pages_per_txn > 0) {
-                    num_txns_per_device[device]++;
-                    auto& read_descriptor_queue = this->get_read_descriptor_queue(device);
-                    read_descriptor_queue.push(
-                        buffer_dispatch::generate_sharded_buffer_read_descriptor(dst, dispatch_params, *shard_view));
+    {
+        ZoneScopedN("FDMeshCQ.read_shard_from_device.build_read_dispatch");
+        if (is_sharded(shard_view->buffer_layout())) {
+            auto dispatch_params = buffer_dispatch::initialize_sharded_buf_read_dispatch_params(
+                *shard_view, id_, expected_num_workers_completed_);
+            const auto& cores = dispatch_params.buffer_page_mapping->all_cores;
+            for (uint32_t core_id = 0; core_id < shard_view->num_cores(); ++core_id) {
+                for (const auto& core_page_mapping : dispatch_params.buffer_page_mapping->core_page_mappings[core_id]) {
+                    buffer_dispatch::copy_sharded_buffer_from_core_to_completion_queue(
+                        core_id,
+                        core_page_mapping,
+                        *shard_view,
+                        dispatch_params,
+                        sub_device_ids,
+                        cores[core_id],
+                        this->dispatch_core_type());
+                    if (dispatch_params.pages_per_txn > 0) {
+                        num_txns_per_device[device]++;
+                        auto& read_descriptor_queue = this->get_read_descriptor_queue(device);
+                        read_descriptor_queue.push(buffer_dispatch::generate_sharded_buffer_read_descriptor(
+                            dst, dispatch_params, *shard_view));
+                    }
                 }
             }
-        }
-    } else {
-        buffer_dispatch::BufferReadDispatchParams dispatch_params =
-            buffer_dispatch::initialize_interleaved_buf_read_dispatch_params(
-                *shard_view, id_, expected_num_workers_completed_);
+        } else {
+            buffer_dispatch::BufferReadDispatchParams dispatch_params =
+                buffer_dispatch::initialize_interleaved_buf_read_dispatch_params(
+                    *shard_view, id_, expected_num_workers_completed_);
 
-        buffer_dispatch::copy_interleaved_buffer_to_completion_queue(
-            dispatch_params, *shard_view, sub_device_ids, this->dispatch_core_type(), dst, pinned_memory);
-        if ((dispatch_params.pages_per_txn > 0) && (dispatch_params.requires_completion_read)) {
-            num_txns_per_device[device]++;
-            auto& read_descriptor_queue = this->get_read_descriptor_queue(device);
-            read_descriptor_queue.push(
-                buffer_dispatch::generate_interleaved_buffer_read_descriptor(dst, dispatch_params, *shard_view));
+            buffer_dispatch::copy_interleaved_buffer_to_completion_queue(
+                dispatch_params, *shard_view, sub_device_ids, this->dispatch_core_type(), dst, pinned_memory);
+            if ((dispatch_params.pages_per_txn > 0) && (dispatch_params.requires_completion_read)) {
+                num_txns_per_device[device]++;
+                auto& read_descriptor_queue = this->get_read_descriptor_queue(device);
+                read_descriptor_queue.push(
+                    buffer_dispatch::generate_interleaved_buffer_read_descriptor(dst, dispatch_params, *shard_view));
+            }
         }
     }
 }
@@ -677,6 +684,7 @@ void FDMeshCommandQueue::increment_num_entries_in_completion_queue() {
 
 void FDMeshCommandQueue::submit_memcpy_request(
     std::unordered_map<IDevice*, uint32_t>& num_txns_per_device, bool blocking) {
+    ZoneScopedN("FDMeshCQ.submit_memcpy_request");
     completion_queue_reads_.push(std::make_shared<MeshCompletionReaderVariant>(
         std::in_place_type<MeshBufferReadDescriptor>, std::move(num_txns_per_device)));
 
