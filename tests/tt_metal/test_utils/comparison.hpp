@@ -15,12 +15,10 @@
 namespace tt::test_utils {
 
 //! Generic Library of templated comparison functions.
-//! Custom type is supported as long as the custom type supports the following custom functions
-//! static SIZEOF - indicates byte size of custom type
-//! to_float() - get float value from custom type
-//! to_packed() - get packed (into an integral type that is of the bitwidth specified by SIZEOF)
-//! Constructor(float in) - constructor with a float as the initializer
-//! Constructor(uint32_t in) - constructor with a uint32_t as the initializer -- only lower bits needed
+//! Custom ValueType is supported as long as it is convertible to float (used
+//! by is_close to compute absolute / relative error). The unpack-and-compare
+//! helpers additionally require trivial-copyability for std::bit_cast through
+//! the byte-shuffling layer in packing.hpp.
 //
 // this follows the implementation of numpy's is_close
 template <typename ValueType>

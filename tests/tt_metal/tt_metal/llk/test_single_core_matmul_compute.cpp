@@ -21,6 +21,7 @@
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/buffer_types.hpp>
 #include <tt-metalium/circular_buffer_config.hpp>
+#include <tt-metalium/constants.hpp>
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/kernel_types.hpp>
 #include "device_fixture.hpp"
@@ -278,38 +279,43 @@ bool single_tile_matmul(
     ////////////////////////////////////////////////////////////////////////////
     //                      Stimulus & Golden Generation
     ////////////////////////////////////////////////////////////////////////////
-    // Format-dispatched. Both branches produce a flat float `golden_floats`
-    // vector indexed in face-major byte order so the comparison step below
-    // can use a single uniform validation path.
+    // Random U(-1, +1) stimulus for both formats; golden is the actual
+    // matmul evaluated host-side over the post-quantization input floats.
+    // Trivial stimulus is intentionally avoided because it masks structural
+    // bugs (e.g. a wrong K-stride is invisible if every K-slice tile is
+    // bit-identical) -- exactly the pattern that hid the multi_tile_compute
+    // in1_index_c_offset bug for the BF16 path.
     std::vector<uint32_t> packed_input0;
     std::vector<uint32_t> packed_input1;
+    std::vector<float> in0_floats;
+    std::vector<float> in1_floats;
     std::vector<float> golden_floats;
-    constexpr int kTileElems = 32 * 32;
+    constexpr float rng = 1.0f;
 
     if (in_fmt == tt::DataFormat::Fp8_e4m3) {
-        auto [in0, in0_floats] = make_fp8_input(/*seed=*/0, /*rng=*/1.0f);
-        auto [in1, in1_floats] = make_fp8_input(/*seed=*/1, /*rng=*/1.0f);
-        packed_input0 = std::move(in0);
-        packed_input1 = std::move(in1);
-        golden_floats.assign(kTileElems, 0.0f);
-        for (int y = 0; y < 32; y++) {
-            for (int x = 0; x < 32; x++) {
-                float acc = 0.0f;
-                for (int z = 0; z < 32; z++) {
-                    acc += in0_floats[byte_tile_face_major_index(z, y)] * in1_floats[byte_tile_face_major_index(x, z)];
-                }
-                golden_floats[byte_tile_face_major_index(x, y)] = acc;
-            }
-        }
-    } else {
-        // BF16 trivial-stimulus path: in0 = 1.0, in1 = 1/32 → output element
-        // is sum of 32 (1.0 * 1/32) = 1.0 everywhere, so golden is constant 1.0.
-        const auto seed = std::chrono::system_clock::now().time_since_epoch().count();
+        packed_input0 = generate_packed_uniform_random_vector<uint32_t, float8_e4m3>(
+            float8_e4m3(-rng), float8_e4m3(+rng), tt::constants::TILE_HW, /*seed=*/0);
+        packed_input1 = generate_packed_uniform_random_vector<uint32_t, float8_e4m3>(
+            float8_e4m3(-rng), float8_e4m3(+rng), tt::constants::TILE_HW, /*seed=*/1);
+        in0_floats = fp8_to_floats(packed_input0);
+        in1_floats = fp8_to_floats(packed_input1);
+    } else {  // bfloat16
         packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-            1.0f, 1.0f, in_tile_size / sizeof(bfloat16), seed);
+            bfloat16(-rng), bfloat16(+rng), tt::constants::TILE_HW, /*seed=*/0);
         packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-            1.0f / 32.0f, 1.0f / 32.0f, in_tile_size / sizeof(bfloat16), seed + 1);
-        golden_floats.assign(out_tile_size / sizeof(bfloat16), 1.0f);
+            bfloat16(-rng), bfloat16(+rng), tt::constants::TILE_HW, /*seed=*/1);
+        in0_floats = bf16_to_floats(packed_input0);
+        in1_floats = bf16_to_floats(packed_input1);
+    }
+    golden_floats.assign(tt::constants::TILE_HW, 0.0f);
+    for (uint32_t y = 0; y < tt::constants::TILE_HEIGHT; y++) {
+        for (uint32_t x = 0; x < tt::constants::TILE_WIDTH; x++) {
+            float acc = 0.0f;
+            for (uint32_t z = 0; z < tt::constants::TILE_WIDTH; z++) {
+                acc += in0_floats[byte_tile_face_major_index(z, y)] * in1_floats[byte_tile_face_major_index(x, z)];
+            }
+            golden_floats[byte_tile_face_major_index(x, y)] = acc;
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -341,10 +347,12 @@ bool single_tile_matmul(
     const bool fp8_out = (out_fmt == tt::DataFormat::Fp8_e4m3);
     auto dest_floats = fp8_out ? fp8_to_floats(dest_buffer_data) : bf16_to_floats(dest_buffer_data);
 
-    // Tolerances: FP8-narrowing path tracks ~1/8 quantization error; BF16 path
-    // preserves the legacy 0.015 rtol the original test asserted.
-    const float rtol = fp8_out ? 0.125f : 0.015f;
-    const float atol = fp8_out ? 0.125f : 0.001f;
+    // Tolerances under random U(-1, +1) stimulus: FP8 output tracks ~1/8
+    // quantization error; BF16 output (with default fp32_dest_acc=false uses
+    // BF16 dest accumulation, so per-element error grows with the K=32 inner
+    // dim) needs a few-percent slack.
+    const float rtol = fp8_out ? 0.125f : 0.05f;
+    const float atol = fp8_out ? 0.125f : 0.2f;
     pass &= tt::test_utils::is_close_vectors<float>(dest_floats, golden_floats, rtol, atol);
     return pass;
 }
@@ -448,48 +456,53 @@ bool single_block_matmul(
     ////////////////////////////////////////////////////////////////////////////
     //                      Stimulus & Golden Generation
     ////////////////////////////////////////////////////////////////////////////
-    // Format-dispatched. Both branches produce a flat float `golden_floats`
-    // vector indexed in face-major byte order across all M*N output tiles,
-    // so the comparison step uses a single uniform validation path.
+    // Random U(-1, +1) stimulus for both formats; golden is the actual
+    // matmul evaluated host-side over the post-quantization input floats.
+    // Trivial stimulus is intentionally avoided because it masks structural
+    // bugs (e.g. a wrong K-stride is invisible if every K-slice tile is
+    // bit-identical) -- exactly the pattern that hid the multi_tile_compute
+    // in1_index_c_offset bug for the BF16 path.
     std::vector<uint32_t> packed_input0;
     std::vector<uint32_t> packed_input1;
+    std::vector<float> in0_floats;
+    std::vector<float> in1_floats;
     std::vector<float> golden_floats;
-    constexpr int kTileElems = 32 * 32;
+    constexpr float rng = 1.0f;
 
     if (in_fmt == tt::DataFormat::Fp8_e4m3) {
-        auto [in0, in0_floats] = make_fp8_input(/*seed=*/0, /*rng=*/1.0f, M * K);
-        auto [in1, in1_floats] = make_fp8_input(/*seed=*/1, /*rng=*/1.0f, K * N);
-        packed_input0 = std::move(in0);
-        packed_input1 = std::move(in1);
-        golden_floats.assign(M * N * kTileElems, 0.0f);
-        for (uint32_t mt = 0; mt < M; mt++) {
-            for (uint32_t nt = 0; nt < N; nt++) {
-                const size_t out_tile_off = (mt * N + nt) * kTileElems;
-                for (int y = 0; y < 32; y++) {
-                    for (int x = 0; x < 32; x++) {
-                        float acc = 0.0f;
-                        for (uint32_t kt = 0; kt < K; kt++) {
-                            const size_t in0_tile_off = (mt * K + kt) * kTileElems;
-                            const size_t in1_tile_off = (kt * N + nt) * kTileElems;
-                            for (int z = 0; z < 32; z++) {
-                                acc += in0_floats[in0_tile_off + byte_tile_face_major_index(z, y)] *
-                                       in1_floats[in1_tile_off + byte_tile_face_major_index(x, z)];
-                            }
+        packed_input0 = generate_packed_uniform_random_vector<uint32_t, float8_e4m3>(
+            float8_e4m3(-rng), float8_e4m3(+rng), tt::constants::TILE_HW * M * K, /*seed=*/0);
+        packed_input1 = generate_packed_uniform_random_vector<uint32_t, float8_e4m3>(
+            float8_e4m3(-rng), float8_e4m3(+rng), tt::constants::TILE_HW * K * N, /*seed=*/1);
+        in0_floats = fp8_to_floats(packed_input0);
+        in1_floats = fp8_to_floats(packed_input1);
+    } else {  // bfloat16
+        packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
+            bfloat16(-rng), bfloat16(+rng), tt::constants::TILE_HW * M * K, /*seed=*/0);
+        packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
+            bfloat16(-rng), bfloat16(+rng), tt::constants::TILE_HW * K * N, /*seed=*/1);
+        in0_floats = bf16_to_floats(packed_input0);
+        in1_floats = bf16_to_floats(packed_input1);
+    }
+    golden_floats.assign(M * N * tt::constants::TILE_HW, 0.0f);
+    for (uint32_t mt = 0; mt < M; mt++) {
+        for (uint32_t nt = 0; nt < N; nt++) {
+            const size_t out_tile_off = (mt * N + nt) * tt::constants::TILE_HW;
+            for (uint32_t y = 0; y < tt::constants::TILE_HEIGHT; y++) {
+                for (uint32_t x = 0; x < tt::constants::TILE_WIDTH; x++) {
+                    float acc = 0.0f;
+                    for (uint32_t kt = 0; kt < K; kt++) {
+                        const size_t in0_tile_off = (mt * K + kt) * tt::constants::TILE_HW;
+                        const size_t in1_tile_off = (kt * N + nt) * tt::constants::TILE_HW;
+                        for (uint32_t z = 0; z < tt::constants::TILE_WIDTH; z++) {
+                            acc += in0_floats[in0_tile_off + byte_tile_face_major_index(z, y)] *
+                                   in1_floats[in1_tile_off + byte_tile_face_major_index(x, z)];
                         }
-                        golden_floats[out_tile_off + byte_tile_face_major_index(x, y)] = acc;
                     }
+                    golden_floats[out_tile_off + byte_tile_face_major_index(x, y)] = acc;
                 }
             }
         }
-    } else {
-        // BF16 trivial-stimulus path: in0 = 1.0, in1 = 1/32 → per-tile result
-        // is constant 1.0; accumulating K tiles gives constant K everywhere.
-        const auto seed = std::chrono::system_clock::now().time_since_epoch().count();
-        packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-            1.0f, 1.0f, in0_byte_size / sizeof(bfloat16), seed);
-        packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-            0.03125f, 0.03125f, in1_byte_size / sizeof(bfloat16), seed + 1);
-        golden_floats.assign(out_byte_size / sizeof(bfloat16), 1.0f * K);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -525,14 +538,17 @@ bool single_block_matmul(
     const bool fp8_out = (out_fmt == tt::DataFormat::Fp8_e4m3);
     auto dest_floats = fp8_out ? fp8_to_floats(dest_buffer_data) : bf16_to_floats(dest_buffer_data);
 
-    // FP8 with K>1 sees deeper accumulation rounding, so atol/min_pcc loosen.
-    const float rtol = fp8_out ? 0.125f : 0.015f;
-    const float atol = fp8_out ? ((K > 1) ? 0.25f : 0.125f) : 0.001f;
+    // Tolerances under random U(-1, +1) stimulus. FP8 output: ~1/8
+    // quantization plus deeper accumulation rounding for K>1. BF16 output
+    // (default fp32_dest_acc=false uses BF16 dest accumulation, so per-element
+    // error grows with K * TILE_WIDTH inner-dim length) needs a few-percent
+    // slack. PCC backstop catches structural mis-permutations that pointwise
+    // tolerances would let slip.
+    const float rtol = fp8_out ? 0.125f : 0.05f;
+    const float atol = fp8_out ? ((K > 1) ? 0.25f : 0.125f) : ((K > 1) ? 0.4f : 0.2f);
     pass &= tt::test_utils::is_close_vectors<float>(dest_floats, golden_floats, rtol, atol);
-    if (fp8_out) {
-        const double min_pcc = (K > 1) ? 0.98 : 0.99;
-        pass &= check_pcc(dest_floats, golden_floats, min_pcc);
-    }
+    const double min_pcc = fp8_out ? ((K > 1) ? 0.98 : 0.99) : 0.99;
+    pass &= check_pcc(dest_floats, golden_floats, min_pcc);
     return pass;
 }
 // blocked matmul has blocking on output, spill/reloads using intermediate
@@ -544,7 +560,7 @@ bool blocked_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_device,
     const uint32_t in1_cb_index = 1;
     const uint32_t out_cb_index = 16;
     const uint32_t partials_cb_index = 24;
-    const size_t cb_page_size = 2 * 32 * 32;
+    const size_t cb_page_size = 2 * tt::constants::TILE_HW;  // 2 bytes per bfloat16 element
     const size_t in0_byte_size = M * K * cb_page_size;
     const size_t in1_byte_size = K * N * cb_page_size;
     const size_t out_byte_size = M * N * cb_page_size;
@@ -708,7 +724,8 @@ bool blocked_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_device,
         &failed_index);
     if (not pass) {
         log_info(tt::LogTest, "Failed Index={}", failed_index);
-        print_vector_fixed_numel_per_row(unpack_vector<bfloat16, uint32_t>(dest_buffer_data), 32);
+        print_vector_fixed_numel_per_row(
+            unpack_vector<bfloat16, uint32_t>(dest_buffer_data), tt::constants::TILE_WIDTH);
     }
     return pass;
 }

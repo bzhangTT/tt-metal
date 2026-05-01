@@ -4,9 +4,7 @@
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 #include <tt-metalium/bfloat16.hpp>
@@ -45,19 +43,6 @@ inline std::vector<float> bf16_to_floats(const std::vector<uint32_t>& packed) {
 inline int byte_tile_face_major_index(int col, int row) {
     int offset = ((col < 16) ? 0 : 256) + ((row < 16) ? 0 : 512);
     return offset + ((row % 16) * 16) + (col % 16);
-}
-
-// Generate `num_tiles` tiles of fp8_e4m3 stimulus drawn from U(-rng, +rng),
-// returning both the packed-uint32 device-ready buffer and the matching flat
-// float vector (face-major byte order) suitable for golden computation.
-inline std::pair<std::vector<uint32_t>, std::vector<float>> make_fp8_input(
-    int seed, float rng, std::size_t num_tiles = 1) {
-    constexpr std::size_t kTileBytes = 32 * 32;
-    const std::size_t total_bytes = kTileBytes * num_tiles;
-    auto packed = create_random_vector_of_float8_e4m3(
-        total_bytes, /*rand_max_float=*/static_cast<int>(2 * rng), seed, /*offset=*/-rng);
-    auto floats = fp8_to_floats(packed);
-    return {std::move(packed), std::move(floats)};
 }
 
 }  // namespace tt::test_utils
