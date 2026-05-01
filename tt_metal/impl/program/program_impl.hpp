@@ -54,6 +54,7 @@ using DFBSpecName = std::string;
 using SemaphoreSpecName = std::string;
 
 namespace distributed {
+class MeshDevice;
 class MeshWorkload;
 class MeshWorkloadImpl;
 }  // namespace distributed
@@ -67,7 +68,7 @@ namespace program_dispatch {
 void assemble_device_commands(
     ProgramCommandSequence& program_command_sequence,
     detail::ProgramImpl& program,
-    IDevice* device,
+    distributed::MeshDevice* mesh_device,
     SubDeviceId sub_device_id,
     bool use_prefetcher_cache);
 }
@@ -245,7 +246,7 @@ public:
     const ProgramConfig& get_program_config(uint32_t programmable_core_type_index) const;
     const std::vector<SubDeviceId>& determine_sub_device_ids(const IDevice* device);
 
-    void generate_trace_dispatch_commands(IDevice* device, bool use_prefetcher_cache);
+    void generate_trace_dispatch_commands(distributed::MeshDevice* mesh_device, bool use_prefetcher_cache);
     std::unordered_map<uint64_t, ProgramCommandSequence>& get_trace_cached_program_command_sequences() noexcept;
 
     // debug/test
@@ -319,7 +320,7 @@ public:
 
     std::unordered_map<uint64_t, ProgramCommandSequence>& get_cached_program_command_sequences() noexcept;
 
-    void generate_dispatch_commands(IDevice* device, bool use_prefetcher_cache);
+    void generate_dispatch_commands(distributed::MeshDevice* mesh_device, bool use_prefetcher_cache);
 
     // Dispatches detail::collect_kernel_meta, device is nullable
     std::vector<detail::KernelMeta> collect_kernel_meta(IDevice* device) const;
@@ -497,7 +498,7 @@ private:
     friend void program_dispatch::assemble_device_commands(
         ProgramCommandSequence& program_command_sequence,
         ProgramImpl& program,
-        IDevice* device,
+        distributed::MeshDevice* mesh_device,
         SubDeviceId sub_device_id,
         bool use_prefetcher_cache);
 
