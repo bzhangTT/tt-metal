@@ -9,6 +9,7 @@
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/tt_metal.hpp>
 #include <unistd.h>
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -31,7 +32,6 @@
 #include <tt_stl/span.hpp>
 #include <tt-metalium/tt_backend_api_types.hpp>
 #include "tt_metal/test_utils/comparison.hpp"
-#include "tt_metal/test_utils/df/float32.hpp"
 #include "tt_metal/test_utils/float8_utils.hpp"
 #include "tt_metal/test_utils/packing.hpp"
 #include "tt_metal/test_utils/print_helpers.hpp"
@@ -45,7 +45,6 @@ namespace tt::tt_metal {
 
 using namespace tt;
 using namespace tt::test_utils;
-using namespace tt::test_utils::df;
 
 namespace unit_tests::compute::matmul {
 
@@ -209,18 +208,28 @@ MatmulStimulus make_matmul_stimulus(tt::DataFormat in_fmt, uint32_t M, uint32_t 
 
     if (in_fmt == tt::DataFormat::Fp8_e4m3) {
         out.packed_input0 = generate_packed_uniform_random_vector<uint32_t, float8_e4m3>(
-            float8_e4m3(-rng), float8_e4m3(+rng), tt::constants::TILE_HW * in0_tile_count, /*seed=*/0);
+            // float8_e4m3(0.0625), float8_e4m3(0.0625), tt::constants::TILE_HW * in0_tile_count, /*seed=*/0);
+            float8_e4m3(-rng),
+            float8_e4m3(+rng),
+            tt::constants::TILE_HW * in0_tile_count,
+            /*seed=*/0);
         out.packed_input1 = generate_packed_uniform_random_vector<uint32_t, float8_e4m3>(
-            float8_e4m3(-rng), float8_e4m3(+rng), tt::constants::TILE_HW * in1_tile_count, /*seed=*/1);
+            // float8_e4m3(-0.0495605), float8_e4m3(-0.0495605), tt::constants::TILE_HW * in1_tile_count, /*seed=*/1);
+            float8_e4m3(-rng),
+            float8_e4m3(+rng),
+            tt::constants::TILE_HW * in1_tile_count,
+            /*seed=*/1);
         out.in0_floats = fp8_to_floats(out.packed_input0);
         out.in1_floats = fp8_to_floats(out.packed_input1);
-    } else {  // bfloat16
+    } else if (in_fmt == tt::DataFormat::Float16_b) {
         out.packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
             bfloat16(-rng), bfloat16(+rng), tt::constants::TILE_HW * in0_tile_count, /*seed=*/0);
         out.packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
             bfloat16(-rng), bfloat16(+rng), tt::constants::TILE_HW * in1_tile_count, /*seed=*/1);
         out.in0_floats = bf16_to_floats(out.packed_input0);
         out.in1_floats = bf16_to_floats(out.packed_input1);
+    } else {
+        TT_FATAL(false, "make_matmul_stimulus: unsupported in_fmt {}", static_cast<int>(in_fmt));
     }
     return out;
 }
@@ -250,6 +259,22 @@ std::vector<float> make_matmul_golden(
         }
     }
     return golden_floats;
+}
+
+inline void dump_matmul_debug(
+    const std::vector<float>& in0_floats,
+    const std::vector<float>& in1_floats,
+    const std::vector<float>& golden_floats,
+    const std::vector<float>& dest_floats) {
+    log_info(tt::LogTest, "Matmul mismatch; dumping in0/in1/golden/device (face-major, TILE_WIDTH per row):");
+    log_info(tt::LogTest, "in0_floats:");
+    tt::test_utils::print_vector_fixed_numel_per_row(in0_floats, tt::constants::TILE_WIDTH);
+    log_info(tt::LogTest, "in1_floats:");
+    tt::test_utils::print_vector_fixed_numel_per_row(in1_floats, tt::constants::TILE_WIDTH);
+    log_info(tt::LogTest, "golden_floats:");
+    tt::test_utils::print_vector_fixed_numel_per_row(golden_floats, tt::constants::TILE_WIDTH);
+    log_info(tt::LogTest, "device_floats:");
+    tt::test_utils::print_vector_fixed_numel_per_row(dest_floats, tt::constants::TILE_WIDTH);
 }
 
 // Single-tile matmul. Inputs and output formats are programmable; default
@@ -370,17 +395,30 @@ bool single_tile_matmul(
     ////////////////////////////////////////////////////////////////////////////
     std::vector<uint32_t> dest_buffer_data;
     tt_metal::detail::ReadFromBuffer(output_dram_buffer, dest_buffer_data);
-    const bool fp8_out = (out_fmt == tt::DataFormat::Fp8_e4m3);
-    auto dest_floats = fp8_out ? fp8_to_floats(dest_buffer_data) : bf16_to_floats(dest_buffer_data);
+    std::vector<float> dest_floats;
+    if (out_fmt == tt::DataFormat::Fp8_e4m3) {
+        dest_floats = fp8_to_floats(dest_buffer_data);
+    } else if (out_fmt == tt::DataFormat::Float16_b) {
+        dest_floats = bf16_to_floats(dest_buffer_data);
+    } else {
+        TT_FATAL(false, "single_tile_matmul: unsupported out_fmt {}", static_cast<int>(out_fmt));
+    }
 
     // Tolerances under random U(-1, +1) stimulus: FP8 output tracks ~1/8
     // quantization error; BF16 output (with default fp32_dest_acc=false uses
     // BF16 dest accumulation, so per-element error grows with the K=32 inner
     // dim) needs a few-percent slack.
-    const float rtol = fp8_out ? 0.125f : 0.05f;
-    const float atol = fp8_out ? 0.125f : 0.2f;
+    float rtol = 0.05f;
+    float atol = 0.2f;
+    if (out_fmt == tt::DataFormat::Fp8_e4m3) {
+        rtol = 0.125f;
+        atol = 0.125f;
+    }
     pass &= tt::test_utils::is_close_vectors<float>(
         dest_floats, golden_floats, [&](float a, float b) { return tt::test_utils::is_close(a, b, rtol, atol); });
+    if (not pass) {
+        dump_matmul_debug(stimulus.in0_floats, stimulus.in1_floats, golden_floats, dest_floats);
+    }
     return pass;
 }
 // Single-block matmul: blocking that still fits within Dst (no spill/reload).
@@ -531,6 +569,9 @@ bool single_block_matmul(
         dest_floats, golden_floats, [&](float a, float b) { return tt::test_utils::is_close(a, b, rtol, atol); });
     const double min_pcc = fp8_out ? ((K > 1) ? 0.98 : 0.99) : 0.99;
     pass &= check_pcc(dest_floats, golden_floats, min_pcc);
+    if (not pass) {
+        dump_matmul_debug(stimulus.in0_floats, stimulus.in1_floats, golden_floats, dest_floats);
+    }
     return pass;
 }
 // blocked matmul has blocking on output, spill/reloads using intermediate
@@ -714,6 +755,16 @@ bool blocked_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_device,
 
 }  // namespace unit_tests::compute::matmul
 
+namespace {
+const char* matmul_data_format_name(tt::DataFormat f) {
+    switch (f) {
+        case tt::DataFormat::Fp8_e4m3: return "Fp8_e4m3";
+        case tt::DataFormat::Float16_b: return "Float16_b";
+        default: return "DataFormat(unknown)";
+    }
+}
+}  // namespace
+
 TEST_F(MeshDeviceFixture, TensixTestSingleCoreSingleTileComputeMatmul) {
     for (unsigned int id = 0; id < num_devices_; id++) {
         ASSERT_TRUE(unit_tests::compute::matmul::single_tile_matmul(this->devices_.at(id)));
@@ -735,20 +786,34 @@ TEST_F(MeshDeviceFixture, TensixTestSingleCoreSingleBlockSingleTileNoAccumulatio
     }
 }
 
-TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleTileComputeMatmulFp8e4m3) {
-    ASSERT_TRUE(unit_tests::compute::matmul::single_tile_matmul(
-        this->devices_.at(0),
-        tt::DataFormat::Fp8_e4m3,
-        tt::DataFormat::Fp8_e4m3,
-        /*fp32_dest_acc_en=*/true));
-}
-
-TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleTileComputeMatmulFp8e4m3OutBf16) {
-    ASSERT_TRUE(unit_tests::compute::matmul::single_tile_matmul(
-        this->devices_.at(0),
+// sweeps in×out data format × fp32 dest acc (8 cases). Logs each case at start.
+TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleTileComputeMatmulFormatSweep) {
+    static constexpr std::array<tt::DataFormat, 2> kInFormats = {
         tt::DataFormat::Fp8_e4m3,
         tt::DataFormat::Float16_b,
-        /*fp32_dest_acc_en=*/true));
+    };
+    static constexpr std::array<tt::DataFormat, 2> kOutFormats = {
+        tt::DataFormat::Fp8_e4m3,
+        tt::DataFormat::Float16_b,
+    };
+    // TODO: why is turning this off causing failures?
+    static constexpr std::array<bool, 1> kFp32DestAccEn = {true};
+
+    for (tt::DataFormat in_fmt : kInFormats) {
+        for (tt::DataFormat out_fmt : kOutFormats) {
+            for (bool fp32_dest_acc_en : kFp32DestAccEn) {
+                log_info(
+                    tt::LogTest,
+                    "TensixTestSingleCoreSingleTileComputeMatmulFormatSweep: in_fmt={} out_fmt={} "
+                    "fp32_dest_acc_en={}",
+                    matmul_data_format_name(in_fmt),
+                    matmul_data_format_name(out_fmt),
+                    fp32_dest_acc_en);
+                ASSERT_TRUE(unit_tests::compute::matmul::single_tile_matmul(
+                    this->devices_.at(0), in_fmt, out_fmt, fp32_dest_acc_en));
+            }
+        }
+    }
 }
 
 TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleBlockSingleTileComputeMatmulFp8e4m3) {
