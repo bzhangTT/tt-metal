@@ -183,8 +183,8 @@ ALWI void tilize_block(
  * | Function   | icb1             | Input circular buffer B identifier       | uint32_t     | 0 to 31     | True     |
  * | Function   | block            | Size of tile block to work on            | uint32_t     | > 0         | True     |
  * | Function   | tile_idx_b       | Tile index for source B                  | uint32_t     | >= 0        | True     |
- * | Function   | num_faces        | Number of faces per tile                 | uint32_t     | 1 to 4      | False    |
- * | Function   | srca_face_r_dim  | Number of rows in each face (A)          | uint32_t     | 1 to 16     | False    |
+ *
+ * Operand A face geometry is read from circular-buffer unpack metadata.
  */
 // clang-format on
 template <bool dst_accum_mode>
@@ -192,10 +192,8 @@ ALWI void unpack_reconfig_A_B_block(
     const std::uint32_t old_icb0,
     const std::uint32_t new_icb0,
     const std::uint32_t old_icb1,
-    const std::uint32_t new_icb1,
-    uint32_t num_faces = 4,
-    uint32_t srca_face_r_dim = 16) {
-    UNPACK((llk_unpack_reconfig_data_format_srca<dst_accum_mode>(old_icb0, new_icb0, srca_face_r_dim, num_faces)));
+    const std::uint32_t new_icb1) {
+    UNPACK((llk_unpack_reconfig_data_format_srca<dst_accum_mode>(old_icb0, new_icb0)));
     UNPACK((llk_unpack_reconfig_data_format_srcb<dst_accum_mode>(old_icb1, new_icb1)));
 }
 
