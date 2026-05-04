@@ -348,7 +348,7 @@ class TestMoeUngroupDevice:
 
         device = ttml.autograd.AutoContext.get_instance().get_device()
         ttnn.synchronize_device(device)
-        ungrouped = ttml.ops.metal_ops.moe_ungroup(
+        ungrouped = ttml.ops.metal.moe_ungroup(
             grouped,
             plan,
             offsets,
@@ -558,7 +558,7 @@ class TestMoeUngroupProfile:
         )
         # Warmup.
         for _ in range(warmup):
-            ttml.ops.metal_ops.moe_ungroup(
+            ttml.ops.metal.moe_ungroup(
                 grouped,
                 plan,
                 offsets,
@@ -572,7 +572,7 @@ class TestMoeUngroupProfile:
 
         # Timed iters with per-iter profiler flush.
         for _ in range(num_iters):
-            ttml.ops.metal_ops.moe_ungroup(
+            ttml.ops.metal.moe_ungroup(
                 grouped,
                 plan,
                 offsets,

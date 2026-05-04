@@ -64,7 +64,7 @@ void py_module_types(nb::module_& m) {
     m.def_submodule("sample");
     m.def_submodule("swiglu");
     m.def_submodule("unary");
-    m.def_submodule("metal_ops");
+    m.def_submodule("metal");
 }
 
 void py_module(nb::module_& m) {
@@ -464,7 +464,7 @@ void py_module(nb::module_& m) {
     }
 
     {
-        auto py_metal = static_cast<nb::module_>(m.attr("metal_ops"));
+        auto py_metal = static_cast<nb::module_>(m.attr("metal"));
         py_metal.def(
             "moe_ungroup",
             [](const ttnn::Tensor& expert_out,
