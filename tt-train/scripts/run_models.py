@@ -198,6 +198,8 @@ def main() -> int:
         if exclude_filenames:
             if model_filename in exclude_filenames:
                 continue
+        if "mgd" in model:
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = os.path.expandvars(model["mgd"])
 
         binary = os.path.expandvars(model["binary"])
         args = process_args(model["args"]) if model["args"] is not None else []

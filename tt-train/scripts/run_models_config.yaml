@@ -80,3 +80,31 @@ models:
       - "n150"
       - "n300"
       - "p100"
+
+  - name: "TinyLlama 1.1B DDP=32 Shakespeare"
+    filename: "tinyllama_1_1b_ddp_32_shakespeare"
+    binary: "${TT_METAL_RUNTIME_ROOT}/tt-train/sources/examples/nano_gpt/train_nanogpt.py"
+    args:
+      - "-c ${TT_METAL_RUNTIME_ROOT}/tt-train/configs/training_configs/training_shakespeare_tinyllama_ddp.yaml"
+      - "--track_memory"
+      - "--batch_size=160"
+      - "--max_steps=100"
+    mgd: "${TT_METAL_RUNTIME_ROOT}/tt_metal/fabric/mesh_graph_descriptors/single_bh_galaxy_mesh_x_graph_descriptor.textproto"
+    tokenize:
+      text_file: "data/shakespeare.txt"
+      hf_tokenizer: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+      output_file: "data/tokenized_shakespeare_tinyllama"
+
+  - name: "Llama 8B TP=8 DDP=4 Shakespeare"
+    filename: "llama_8b_tp_8_ddp_4_shakespeare"
+    binary: "${TT_METAL_RUNTIME_ROOT}/tt-train/sources/examples/nano_gpt/train_nanogpt.py"
+    args:
+      - "-c ${TT_METAL_RUNTIME_ROOT}/tt-train/configs/training_configs/llama8b/training_shakespeare_llama_8b_galaxy_tp_ddp.yaml"
+      - "--track_memory"
+      - "--batch_size=4"
+      - "--max_steps=100"
+    mgd: "${TT_METAL_RUNTIME_ROOT}/tt_metal/fabric/mesh_graph_descriptors/single_bh_galaxy_torus_y_graph_descriptor.textproto"
+    # tokenize:
+    #   text_file: "data/shakespeare.txt"
+    #   hf_tokenizer: "/mnt/MLPerf/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
+    #   output_file: "data/tokenized_shakespeare_llama8b"
