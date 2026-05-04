@@ -2086,9 +2086,9 @@ class EltwiseBinaryGolden(FidelityMasking):
                             block_acc = tile_result_f32.to(torch.bfloat16)
                         else:
                             # Add in better precision and then convert to lower precision.
-                            block_acc = (block_acc.to(torch.float32) + tile_result_f32).to(
-                                torch.bfloat16
-                            )
+                            block_acc = (
+                                block_acc.to(torch.float32) + tile_result_f32
+                            ).to(torch.bfloat16)
                     accumulated.append(block_acc)
 
                 result = torch.cat(accumulated)
