@@ -9,6 +9,7 @@
 #include "permute_device_operation.hpp"
 #include "ttnn/device_operation.hpp"
 #include "ttnn/operations/data_movement/common/common.hpp"
+#include "ttnn/operations/data_movement/transpose/device/transpose_utils.hpp"
 #include "ttnn/tensor/tensor_ops.hpp"
 
 namespace ttnn::operations::data_movement {
@@ -16,24 +17,26 @@ PermuteDeviceOperation::program_factory_t PermuteDeviceOperation::select_program
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     const auto& dims = operation_attributes.dims;
     if (tensor_args.input_tensor.layout() == Layout::ROW_MAJOR) {
-        // If the last dimension is not permuted, we can use the row-invariant kernel
+        // Last dimension unchanged — rows can be copied without reordering elements.
         if (dims.back() == tensor_args.input_tensor.logical_shape().rank() - 1) {
             return MultiCoreRowInvariant{};
         }
-        // Otherwise, we need to use the blocked generic, row moving kernel
+        // Last dimension moved — need a blocked transpose in RM.
         return MultiCoreBlockedGeneric{};
-    }  // If the input tensor is not row-major, we need to use the tiled kernels
+    }
+    // Tiled layout selection.
     uint32_t rank = tensor_args.input_tensor.logical_shape().rank();
-    // When the tiled dimensions are not moved, we use this kernel
+    // Tile dims stay in the last two positions (identity or WH swap).
     if ((dims[rank - 1] == rank - 1 && dims[rank - 2] == rank - 2) ||
         (dims[rank - 1] == rank - 2 && dims[rank - 2] == rank - 1)) {
         return MultiCoreTileInvariant{};
     }
-    if (dims[rank - 1] == rank - 1 || dims[rank - 1] == rank - 2) {  // When only one of the tiled dimensions
-                                                                     // is moved
+    // Only one tile dimension is moved out.
+    if (dims[rank - 1] == rank - 1 || dims[rank - 1] == rank - 2) {
         return MultiCoreTileRowInvariant{};
     }
-    return MultiCoreTiledGeneric{};  // When both the tiled dimensions are moved
+    // Both tile dimensions are moved.
+    return MultiCoreTiledGeneric{};
 }
 
 void PermuteDeviceOperation::validate_on_program_cache_miss(
@@ -52,18 +55,72 @@ PermuteDeviceOperation::spec_return_value_t PermuteDeviceOperation::compute_outp
         return tensor_args.optional_output_tensor->tensor_spec();
     }
 
-    SmallVector<uint32_t> shape;
     const auto& input_tensor = tensor_args.input_tensor;
     auto input_shape = input_tensor.logical_shape();
-    shape.reserve(input_shape.rank());
+
+    SmallVector<uint32_t> output_shape_vec;
+    output_shape_vec.reserve(input_shape.rank());
     for (auto dim : attributes.dims) {
-        shape.push_back(input_shape[dim]);
+        output_shape_vec.push_back(input_shape[dim]);
+    }
+    auto output_shape = Shape(std::move(output_shape_vec));
+
+    auto output_mem_config = attributes.output_mem_config;
+
+    // Derive shard_spec for sharded output when the caller did not supply one.
+    if (output_mem_config.is_sharded() && !output_mem_config.shard_spec().has_value()) {
+        auto padded_input_shape = input_tensor.padded_shape();
+        SmallVector<uint32_t> output_padded_vec(output_shape.view().begin(), output_shape.view().end());
+        if (input_tensor.layout() == Layout::TILE && output_shape.rank() >= 2) {
+            const auto& tile = input_tensor.tensor_spec().tile();
+            auto r = output_shape.rank();
+            output_padded_vec[r - 2] = tt::round_up(output_padded_vec[r - 2], tile.get_height());
+            output_padded_vec[r - 1] = tt::round_up(output_padded_vec[r - 1], tile.get_width());
+        }
+        auto output_padded_shape = Shape(std::move(output_padded_vec));
+
+        // Try to adapt the input shard spec to the permuted output shape.
+        bool derived = false;
+        if (input_tensor.is_sharded() && input_tensor.shard_spec().has_value()) {
+            const auto& from_shape = padded_input_shape;
+            uint64_t from_vol = 1, to_vol = 1;
+            for (int i = 0; i < static_cast<int>(from_shape.rank()) - 1; ++i) {
+                from_vol *= from_shape[i];
+            }
+            for (int i = 0; i < static_cast<int>(output_padded_shape.rank()) - 1; ++i) {
+                to_vol *= output_padded_shape[i];
+            }
+            uint64_t from_w = from_shape[-1], to_w = output_padded_shape[-1];
+            auto shard = input_tensor.shard_spec()->shape;
+            uint64_t h_num = static_cast<uint64_t>(shard[0]) * to_vol;
+            uint64_t w_num = static_cast<uint64_t>(shard[1]) * to_w;
+            if (from_vol > 0 && from_w > 0 && h_num % from_vol == 0 && w_num % from_w == 0) {
+                auto adjusted =
+                    transpose::adjust_shard_spec_to_shape(*input_tensor.shard_spec(), from_shape, output_padded_shape);
+                if (adjusted.has_value()) {
+                    output_mem_config = output_mem_config.with_shard_spec(*adjusted);
+                    derived = true;
+                }
+            }
+        }
+        if (!derived) {
+            // Fall back to interleaved when input is sharded but shard spec
+            // cannot be adapted, or generate a fresh spec for interleaved input.
+            if (input_tensor.is_sharded()) {
+                output_mem_config =
+                    MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
+            } else {
+                auto shard_spec = transpose::generate_transpose_shard_spec(
+                    input_tensor, output_padded_shape, output_mem_config.memory_layout());
+                output_mem_config = output_mem_config.with_shard_spec(shard_spec);
+            }
+        }
     }
 
     return TensorSpec(
-        Shape(std::move(shape)),
+        output_shape,
         tt::tt_metal::TensorLayout(
-            input_tensor.dtype(), tt::tt_metal::PageConfig(input_tensor.layout()), attributes.output_mem_config));
+            input_tensor.dtype(), tt::tt_metal::PageConfig(input_tensor.layout()), output_mem_config));
 }
 
 tt::tt_metal::operation::OpPerformanceModelGeneral<PermuteDeviceOperation::tensor_return_value_t>

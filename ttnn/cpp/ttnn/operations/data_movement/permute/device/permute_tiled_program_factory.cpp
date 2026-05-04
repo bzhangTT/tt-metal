@@ -7,6 +7,7 @@
 #include <vector>
 #include <tt-metalium/hal.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include "ttnn/operations/data_movement/common/common.hpp"
 
 namespace ttnn::operations::data_movement {
@@ -44,8 +45,7 @@ ttnn::Shape get_tiled_shape(const ttnn::Tensor& input_tensor) {
         }
         tiled_shape.push_back(dim);
     }
-    auto res = ttnn::Shape(tiled_shape);
-    return res;
+    return ttnn::Shape(tiled_shape);
 }
 
 ttnn::SmallVector<uint32_t> get_strides(const ttnn::Shape& shape) {
@@ -57,15 +57,9 @@ ttnn::SmallVector<uint32_t> get_strides(const ttnn::Shape& shape) {
     return strides;
 }
 
-// Function to compute the inverse of a permutation
 ttnn::SmallVector<uint32_t> get_inverse_permutation(const ttnn::SmallVector<uint32_t>& perm) {
-    // Get the size of the permutation
     size_t n = perm.size();
-
-    // Create a vector for the inverse permutation
     ttnn::SmallVector<uint32_t> inverse_permutation(n);
-
-    // Validate the input permutation
     ttnn::SmallVector<bool> seen(n, false);
     for (size_t i = 0; i < n; ++i) {
         if (perm[i] >= n || seen[perm[i]]) {
@@ -74,7 +68,6 @@ ttnn::SmallVector<uint32_t> get_inverse_permutation(const ttnn::SmallVector<uint
         seen[perm[i]] = true;
         inverse_permutation[perm[i]] = static_cast<uint32_t>(i);
     }
-
     return inverse_permutation;
 }
 
@@ -86,7 +79,7 @@ uint32_t get_buffer_alignment(const ttnn::Tensor& tensor) {
 
 }  // namespace detail
 
-PermuteDeviceOperation::MultiCoreTileInvariant::cached_program_t PermuteDeviceOperation::MultiCoreTileInvariant::create(
+tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreTileInvariant::create_descriptor(
     const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& tensor_return_value) {
@@ -98,8 +91,6 @@ PermuteDeviceOperation::MultiCoreTileInvariant::cached_program_t PermuteDeviceOp
 
     auto* src_buffer = input_tensor.buffer();
     auto* dst_buffer = output_tensor.buffer();
-
-    tt::tt_metal::Program program{};
 
     tt::DataFormat cb_data_format = tt::tt_metal::datatype_to_dataformat_converter(input_tensor.dtype());
     uint32_t input_page_size = detail::tile_size(input_tensor);
@@ -116,152 +107,119 @@ PermuteDeviceOperation::MultiCoreTileInvariant::cached_program_t PermuteDeviceOp
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
         tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, num_tiles);
 
-    tt::tt_metal::CircularBufferConfig cb_src0_config =
-        tt::tt_metal::CircularBufferConfig(num_input_pages_to_read * input_page_size, {{src0_cb_index, cb_data_format}})
-            .set_page_size(src0_cb_index, input_page_size);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src0_config);
+    ProgramDescriptor desc;
+
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_input_pages_to_read * input_page_size,
+        .core_ranges = all_cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(src0_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_page_size,
+        }}},
+    });
 
     uint32_t output_cb_index = src0_cb_index;
     if (swap_hw) {
         uint32_t src1_cb_index = tt::CBIndex::c_16;
-        tt::tt_metal::CircularBufferConfig cb_src1_config =
-            tt::tt_metal::CircularBufferConfig(
-                num_input_pages_to_read * input_page_size, {{src1_cb_index, cb_data_format}})
-                .set_page_size(src1_cb_index, input_page_size);
-        tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src1_config);
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = num_input_pages_to_read * input_page_size,
+            .core_ranges = all_cores,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(src1_cb_index),
+                .data_format = cb_data_format,
+                .page_size = input_page_size,
+            }}},
+        });
         output_cb_index = src1_cb_index;
     }
 
-    std::vector<uint32_t> reader_compile_time_args = {};
-    std::unordered_map<std::string, uint32_t> reader_named_compile_time_args = {
+    // Reader kernel
+    KernelDescriptor reader_desc;
+    reader_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
+        "reader_permute_interleaved_tiled_invariant.cpp";
+    reader_desc.core_ranges = all_cores;
+    reader_desc.named_compile_time_args = {
         {"rank", rank},
         {"page_size", input_page_size},
         {"num_tiles", num_tiles},
     };
-    TensorAccessorArgs(*src_buffer).append_to(reader_compile_time_args);
+    reader_desc.config = ReaderConfigDescriptor{};
+    TensorAccessorArgs(*src_buffer, tensor_accessor::ArgConfig::RuntimeTensorShape)
+        .append_to(reader_desc.compile_time_args, reader_desc.common_runtime_args);
 
-    tt::tt_metal::KernelHandle unary_reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
-        "reader_permute_interleaved_tiled_invariant.cpp",
-        all_cores,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_time_args, {}, reader_named_compile_time_args));
+    // Writer kernel
+    KernelDescriptor writer_desc;
+    writer_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/eltwise/unary/device/kernels/dataflow/writer_unary_interleaved_start_id.cpp";
+    writer_desc.core_ranges = all_cores;
+    writer_desc.compile_time_args = {output_cb_index};
+    writer_desc.config = WriterConfigDescriptor{};
+    TensorAccessorArgs(*dst_buffer).append_to(writer_desc.compile_time_args);
 
-    std::vector<uint32_t> writer_compile_time_args = {output_cb_index};
-    TensorAccessorArgs(*dst_buffer).append_to(writer_compile_time_args);
-
-    tt::tt_metal::KernelHandle unary_writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/eltwise/unary/device/kernels/dataflow/writer_unary_interleaved_start_id.cpp",
-        all_cores,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_time_args));
-
-    uint32_t compute_kernel_id = 0;
+    // Compute kernel (only for swap_hw)
+    KernelDescriptor compute_desc;
     if (swap_hw) {
-        std::vector<uint32_t> compute_kernel_args = {};
         bool fp32_dest_acc_en = cb_data_format == tt::DataFormat::Float32 || cb_data_format == tt::DataFormat::Int32 ||
                                 cb_data_format == tt::DataFormat::UInt32;
-        std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+        std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+            NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
         if (cb_data_format == tt::DataFormat::Float32) {
             unpack_to_dest_mode[src0_cb_index] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         }
-        compute_kernel_id = tt::tt_metal::CreateKernel(
-            program,
-            "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/compute/transpose_wh.cpp",
-            all_cores,
-            tt::tt_metal::ComputeConfig{
-                .fp32_dest_acc_en = fp32_dest_acc_en,
-                .unpack_to_dest_mode = unpack_to_dest_mode,
-                .compile_args = compute_kernel_args,
-            });
+        compute_desc.kernel_source =
+            "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/compute/transpose_wh.cpp";
+        compute_desc.core_ranges = all_cores;
+        compute_desc.config = ComputeConfigDescriptor{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = {unpack_to_dest_mode.begin(), unpack_to_dest_mode.end()},
+        };
     }
 
-    // think of tensor as its tiled shape rather than its logical shape
     auto output_tiled_shape = detail::get_tiled_shape(tensor_return_value);
     auto input_tiled_shape = detail::get_tiled_shape(input_tensor);
     auto output_shape_view = output_tiled_shape.view();
-
-    // read is less expensive than write, so read in order of output tensor, get relevant pre-permutation input tiles,
-    // and then write it out to determine index in input tensor we need the input strides
     auto input_tile_strides = detail::get_strides(input_tiled_shape);
-
-    // we also need the inverse permutation to map back to input tensor
     auto inv_perm = detail::get_inverse_permutation(operation_attributes.dims);
-
-    std::vector<uint32_t> reader_runtime_args = {src_buffer->address(), 0, 0};
-
-    reader_runtime_args.insert(reader_runtime_args.end(), output_shape_view.begin(), output_shape_view.end());
-    reader_runtime_args.insert(reader_runtime_args.end(), inv_perm.begin(), inv_perm.end());
-    reader_runtime_args.insert(reader_runtime_args.end(), input_tile_strides.begin(), input_tile_strides.end());
-
-    std::vector<uint32_t> writer_runtime_args = {dst_buffer->address(), 0, 0};
-
-    std::vector<uint32_t> compute_runtime_args = {0};
 
     auto cores = corerange_to_cores(all_cores, std::nullopt);
     uint32_t start_tile = 0;
-    uint32_t num_tiles_per_core = 0;
     for (const auto& core : cores) {
+        uint32_t num_tiles_per_core = 0;
         if (core_group_1.contains(core)) {
             num_tiles_per_core = num_tiles_per_core_group_1;
         } else if (core_group_2.contains(core)) {
             num_tiles_per_core = num_tiles_per_core_group_2;
-        } else {
-            // no-op
-            num_tiles_per_core = 0;
         }
         uint32_t end_tile = start_tile + num_tiles_per_core;
-        reader_runtime_args[1] = start_tile;
-        reader_runtime_args[2] = end_tile;
 
-        writer_runtime_args[1] = num_tiles_per_core;     // for some reason num_tiles comes first in writer unary
-        writer_runtime_args[2] = start_tile;             // start tile is second in writer unary
+        KernelDescriptor::CoreRuntimeArgs reader_args = {src_buffer->address(), start_tile, end_tile};
+        reader_args.insert(reader_args.end(), output_shape_view.begin(), output_shape_view.end());
+        reader_args.insert(reader_args.end(), inv_perm.begin(), inv_perm.end());
+        reader_args.insert(reader_args.end(), input_tile_strides.begin(), input_tile_strides.end());
+        reader_desc.runtime_args.emplace_back(core, std::move(reader_args));
 
-        tt::tt_metal::SetRuntimeArgs(program, unary_reader_kernel_id, core, reader_runtime_args);
-        tt::tt_metal::SetRuntimeArgs(program, unary_writer_kernel_id, core, writer_runtime_args);
+        writer_desc.runtime_args.emplace_back(
+            core, KernelDescriptor::CoreRuntimeArgs{dst_buffer->address(), num_tiles_per_core, start_tile});
+
         if (swap_hw) {
-            compute_runtime_args[0] = num_tiles_per_core;  // number of tiles transposed
-            tt::tt_metal::SetRuntimeArgs(program, compute_kernel_id, core, compute_runtime_args);
+            compute_desc.runtime_args.emplace_back(core, KernelDescriptor::CoreRuntimeArgs{num_tiles_per_core});
         }
+
         start_tile = end_tile;
     }
 
-    return {
-        std::move(program),
-        {.unary_reader_kernel_id = unary_reader_kernel_id,
-         .unary_writer_kernel_id = unary_writer_kernel_id,
-         .compute_kernel_id = compute_kernel_id,
-         .core_range = all_cores}};
-}
-
-void PermuteDeviceOperation::MultiCoreTileInvariant::override_runtime_arguments(
-    cached_program_t& cached_program,
-    const operation_attributes_t& /*operation_attributes*/,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value) {
-    auto& program = cached_program.program;
-    auto& unary_reader_kernel_id = cached_program.shared_variables.unary_reader_kernel_id;
-    auto& unary_writer_kernel_id = cached_program.shared_variables.unary_writer_kernel_id;
-
-    const auto& input_tensor = tensor_args.input_tensor;
-    auto& output_tensor = tensor_return_value;
-
-    auto* src_buffer = input_tensor.buffer();
-    auto* dst_buffer = output_tensor.buffer();
-    auto& all_cores = cached_program.shared_variables.core_range;
-
-    auto cores = corerange_to_cores(all_cores, std::nullopt);
-    for (const auto& core : cores) {
-        auto& runtime_args = tt::tt_metal::GetRuntimeArgs(program, unary_reader_kernel_id, core);
-        runtime_args[0] = src_buffer->address();
-
-        auto& runtime_args_writer = tt::tt_metal::GetRuntimeArgs(program, unary_writer_kernel_id, core);
-        runtime_args_writer[0] = dst_buffer->address();
+    desc.kernels.push_back(std::move(reader_desc));
+    desc.kernels.push_back(std::move(writer_desc));
+    if (swap_hw) {
+        desc.kernels.push_back(std::move(compute_desc));
     }
+
+    return desc;
 }
 
-PermuteDeviceOperation::MultiCoreTileRowInvariant::cached_program_t
-PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
+tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreTileRowInvariant::create_descriptor(
     const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& tensor_return_value) {
@@ -299,8 +257,6 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
     auto* src_buffer = input_tensor.buffer();
     auto* dst_buffer = output_tensor.buffer();
 
-    tt::tt_metal::Program program{};
-
     tt::DataFormat cb_data_format = tt::tt_metal::datatype_to_dataformat_converter(input_tensor.dtype());
     uint32_t input_page_size = detail::tile_size(input_tensor);
 
@@ -313,8 +269,7 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
 
     uint32_t num_input_pages_to_read = 2;
 
-    uint32_t padded_num_tensor_tiles =
-        num_output_tiles / (padded_output_shape[rank - 2] / tile_shape[0]);  // only last row of Xt should have padding
+    uint32_t padded_num_tensor_tiles = num_output_tiles / (padded_output_shape[rank - 2] / tile_shape[0]);
 
     auto compute_with_storage_grid_size = input_tensor.device()->compute_with_storage_grid_size();
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
@@ -330,30 +285,47 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
 
     all_cores = num_cores > padded_num_cores ? all_cores : padded_all_cores;
 
-    tt::tt_metal::CircularBufferConfig cb_src0_config =
-        tt::tt_metal::CircularBufferConfig(num_input_pages_to_read * input_page_size, {{src0_cb_index, cb_data_format}})
-            .set_page_size(src0_cb_index, input_page_size);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src0_config);
+    ProgramDescriptor desc;
+
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_input_pages_to_read * input_page_size,
+        .core_ranges = all_cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(src0_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_page_size,
+        }}},
+    });
 
     uint32_t output_H = input_shape[dims[rank - 2]];
     uint32_t element_size = input_tensor.element_size();
 
     bool needs_padding = (output_H % tile_shape[1] != 0);
     if (needs_padding) {
-        tt::tt_metal::CircularBufferConfig cb_src1_config =
-            tt::tt_metal::CircularBufferConfig(face_shape[1] * element_size, {{padding_cb_index, cb_data_format}})
-                .set_page_size(padding_cb_index, face_shape[1] * element_size);
-        tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src1_config);
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = face_shape[1] * element_size,
+            .core_ranges = all_cores,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(padding_cb_index),
+                .data_format = cb_data_format,
+                .page_size = face_shape[1] * element_size,
+            }}},
+        });
     }
     if (swap_hw) {
         uint32_t src2_cb_index = tt::CBIndex::c_16;
-        tt::tt_metal::CircularBufferConfig cb_src2_config =
-            tt::tt_metal::CircularBufferConfig(
-                num_input_pages_to_read * input_page_size, {{src2_cb_index, cb_data_format}})
-                .set_page_size(src2_cb_index, input_page_size);
-        tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src2_config);
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = num_input_pages_to_read * input_page_size,
+            .core_ranges = all_cores,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(src2_cb_index),
+                .data_format = cb_data_format,
+                .page_size = input_page_size,
+            }}},
+        });
         output_cb_index = src2_cb_index;
     }
+
     uint32_t padding_val_packed = 0;
     uint32_t num_writes = 0;
     if (output_H % tile_shape[1] != 0) {
@@ -392,9 +364,13 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
         accumulated_outer_dims *= input_shape[i];
     }
 
-    std::vector<uint32_t> reader_compile_time_args = {};
-
-    std::unordered_map<std::string, uint32_t> reader_named_compile_time_args = {
+    // Reader kernel
+    KernelDescriptor reader_desc;
+    reader_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/dataflow/"
+        "reader_unary_transpose_hc_interleaved_tiled_padding_aware.cpp";
+    reader_desc.core_ranges = all_cores;
+    reader_desc.named_compile_time_args = {
         {"num_writes", num_writes},
         {"padding_val_packed", padding_val_packed},
         {"needs_padding", needs_padding},
@@ -405,39 +381,36 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
         {"tile_height", tile_shape[1]},
         {"tile_width", tile_shape[0]},
     };
+    reader_desc.config = ReaderConfigDescriptor{};
+    TensorAccessorArgs(*src_buffer, tensor_accessor::ArgConfig::RuntimeTensorShape)
+        .append_to(reader_desc.compile_time_args, reader_desc.common_runtime_args);
 
-    TensorAccessorArgs(*src_buffer).append_to(reader_compile_time_args);
-
-    tt::tt_metal::KernelHandle unary_reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/dataflow/"
-        "reader_unary_transpose_hc_interleaved_tiled_padding_aware.cpp",
-        all_cores,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_time_args, {}, reader_named_compile_time_args));
-
-    uint32_t compute_kernel_id = 0;
+    // Compute kernel (only for swap_hw)
+    KernelDescriptor compute_desc;
     if (swap_hw) {
-        std::vector<uint32_t> compute_kernel_args = {};
         bool fp32_dest_acc_en = cb_data_format == tt::DataFormat::Float32 || cb_data_format == tt::DataFormat::Int32 ||
                                 cb_data_format == tt::DataFormat::UInt32;
-        std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+        std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+            NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
         if (cb_data_format == tt::DataFormat::Float32) {
             unpack_to_dest_mode[src0_cb_index] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         }
-        compute_kernel_id = tt::tt_metal::CreateKernel(
-            program,
-            "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/compute/transpose_wh.cpp",
-            all_cores,
-            tt::tt_metal::ComputeConfig{
-                .fp32_dest_acc_en = fp32_dest_acc_en,
-                .unpack_to_dest_mode = unpack_to_dest_mode,
-                .compile_args = compute_kernel_args,
-            });
+        compute_desc.kernel_source =
+            "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/compute/transpose_wh.cpp";
+        compute_desc.core_ranges = all_cores;
+        compute_desc.config = ComputeConfigDescriptor{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = {unpack_to_dest_mode.begin(), unpack_to_dest_mode.end()},
+        };
     }
 
-    std::vector<uint32_t> writer_compile_time_args = {};
-
-    std::unordered_map<std::string, uint32_t> writer_named_compile_time_args = {
+    // Writer kernel
+    KernelDescriptor writer_desc;
+    writer_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
+        "writer_permute_interleaved_tiled_row_invariant.cpp";
+    writer_desc.core_ranges = all_cores;
+    writer_desc.named_compile_time_args = {
         {"element_size", element_size},
         {"output_cb_index", output_cb_index},
         {"output_H", output_H},
@@ -451,130 +424,62 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
         {"rank", rank},
         {"h_in_dest", h_in_dest},
     };
-
-    TensorAccessorArgs(*dst_buffer).append_to(writer_compile_time_args);
-
-    tt::tt_metal::KernelHandle unary_writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
-        "writer_permute_interleaved_tiled_row_invariant.cpp",
-        all_cores,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_time_args, {}, writer_named_compile_time_args));
+    writer_desc.config = WriterConfigDescriptor{};
+    TensorAccessorArgs(*dst_buffer).append_to(writer_desc.compile_time_args);
 
     auto input_shape_view = input_shape.view();
 
-    std::vector<uint32_t> reader_runtime_args = {src_buffer->address(), 0, 0};
-
-    std::vector<uint32_t> writer_runtime_args = {dst_buffer->address(), 0, 0, 0, 0};
-    writer_runtime_args.insert(writer_runtime_args.end(), input_shape_view.begin(), input_shape_view.end());
-    writer_runtime_args.insert(writer_runtime_args.end(), dims.begin(), dims.end());
-
-    std::vector<uint32_t> compute_runtime_args = {0};
-
     auto cores = corerange_to_cores(all_cores, std::nullopt);
     uint32_t start_tile = 0;
-    uint32_t num_tiles_per_core = 0;
     uint32_t start_tile_padding = 0;
-    uint32_t num_tiles_per_core_padding = 0;
-    uint32_t end_tile_padding = 0;
     for (const auto& core : cores) {
+        uint32_t num_tiles_per_core = 0;
         if (core_group_1.contains(core)) {
             num_tiles_per_core = num_tiles_per_core_group_1;
         } else if (core_group_2.contains(core)) {
             num_tiles_per_core = num_tiles_per_core_group_2;
-        } else {
-            // no-op
-            num_tiles_per_core = 0;
         }
+        uint32_t num_tiles_per_core_padding = 0;
         if (needs_padding) {
             if (padded_core_group_1.contains(core)) {
                 num_tiles_per_core_padding = padded_num_tiles_per_core_group_1;
             } else if (padded_core_group_2.contains(core)) {
                 num_tiles_per_core_padding = padded_num_tiles_per_core_group_2;
-            } else {
-                // no-op
-                num_tiles_per_core_padding = 0;
             }
         }
         uint32_t end_tile = start_tile + num_tiles_per_core;
-        reader_runtime_args[1] = num_tiles_per_core;
-        reader_runtime_args[2] = start_tile;
+        uint32_t end_tile_padding = start_tile_padding + num_tiles_per_core_padding;
 
-        writer_runtime_args[1] = start_tile;  // for some reason num_tiles comes first in writer unary
-        writer_runtime_args[2] = end_tile;    // start tile is second in writer unary
-        if (needs_padding) {
-            end_tile_padding = start_tile_padding + num_tiles_per_core_padding;
-            writer_runtime_args[3] = start_tile_padding;
-            writer_runtime_args[4] = end_tile_padding;
-        }
+        reader_desc.runtime_args.emplace_back(
+            core, KernelDescriptor::CoreRuntimeArgs{src_buffer->address(), num_tiles_per_core, start_tile});
+
+        KernelDescriptor::CoreRuntimeArgs writer_args = {
+            dst_buffer->address(), start_tile, end_tile, start_tile_padding, end_tile_padding};
+        writer_args.insert(writer_args.end(), input_shape_view.begin(), input_shape_view.end());
+        writer_args.insert(writer_args.end(), dims.begin(), dims.end());
+        writer_desc.runtime_args.emplace_back(core, std::move(writer_args));
+
         if (swap_hw) {
-            compute_runtime_args[0] = num_tiles_per_core;  // number of tiles transposed
-            tt::tt_metal::SetRuntimeArgs(program, compute_kernel_id, core, compute_runtime_args);
+            compute_desc.runtime_args.emplace_back(core, KernelDescriptor::CoreRuntimeArgs{num_tiles_per_core});
         }
-
-        tt::tt_metal::SetRuntimeArgs(program, unary_reader_kernel_id, core, reader_runtime_args);
-        tt::tt_metal::SetRuntimeArgs(program, unary_writer_kernel_id, core, writer_runtime_args);
 
         start_tile = end_tile;
         start_tile_padding = end_tile_padding;
     }
 
-    return {
-        std::move(program),
-        {.unary_reader_kernel_id = unary_reader_kernel_id,
-         .unary_writer_kernel_id = unary_writer_kernel_id,
-         .compute_kernel_id = compute_kernel_id,
-         .core_range = all_cores}};
-}
-
-void PermuteDeviceOperation::MultiCoreTileRowInvariant::override_runtime_arguments(
-    cached_program_t& cached_program,
-    const operation_attributes_t& /*operation_attributes*/,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value) {
-    auto& program = cached_program.program;
-    auto& unary_reader_kernel_id = cached_program.shared_variables.unary_reader_kernel_id;
-    auto& unary_writer_kernel_id = cached_program.shared_variables.unary_writer_kernel_id;
-
-    const auto& input_tensor = tensor_args.input_tensor;
-    auto& output_tensor = tensor_return_value;
-
-    auto* src_buffer = input_tensor.buffer();
-    auto* dst_buffer = output_tensor.buffer();
-    auto& all_cores = cached_program.shared_variables.core_range;
-
-    auto cores = corerange_to_cores(all_cores, std::nullopt);
-    for (const auto& core : cores) {
-        auto& runtime_args = tt::tt_metal::GetRuntimeArgs(program, unary_reader_kernel_id, core);
-        runtime_args[0] = src_buffer->address();
-        auto& runtime_args_writer = tt::tt_metal::GetRuntimeArgs(program, unary_writer_kernel_id, core);
-        runtime_args_writer[0] = dst_buffer->address();
+    desc.kernels.push_back(std::move(reader_desc));
+    desc.kernels.push_back(std::move(writer_desc));
+    if (swap_hw) {
+        desc.kernels.push_back(std::move(compute_desc));
     }
+
+    return desc;
 }
 
-PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOperation::MultiCoreTiledGeneric::create(
+tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreTiledGeneric::create_descriptor(
     const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& tensor_return_value) {
-    // X = output width
-    // Y = output height
-    // input shape = (..., H, W)
-    // output shape = (..., Y, X)
-
-    /**
-     * The algorithm is as follows:
-     * 1. Read in blocks of data along the X and W dimensions (XW blocks, W is contiguous)
-     *  a. TILE_HEIGHT rows along X with TILE_WIDTH elements across W
-     * 2. Tilize, transpose, and untilize the data into a WX block
-     * 3. Write out all the data in WX block to its correct position in the permuted output tensor buffer
-     *  a. We write out on face/subtile line at a time
-     *  a. X is the output width dimension, but it's tiled so we can only write out face/subtile line at a time
-     * 4. Repeat until all XW blocks are processed
-     * 5. If X is not a multiple of TILE_WIDTH, we pad the last face/subtile line with the pad value
-     * 6. If Y is not a multiple of TILE_HEIGHT, we pad the last set of tiles on the Y dimension with the pad value
-     *
-     */
-
     using namespace tt;
     using namespace tt::tt_metal;
     const float pad_value = operation_attributes.pad_value;
@@ -591,9 +496,8 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
     auto* src_buffer = input_tensor.buffer();
     auto* dst_buffer = output_tensor.buffer();
 
-    tt::tt_metal::Program program{};
-    uint32_t logical_volume = input_shape.volume();
-    uint32_t num_rows = logical_volume / input_shape[rank - 1];
+    uint64_t logical_volume = static_cast<uint64_t>(input_shape.volume());
+    uint64_t num_rows = logical_volume / input_shape[rank - 1];
     uint32_t y_dim_index_in_input = dims[rank - 2];
 
     uint32_t x_dim_index_in_input = dims[rank - 1];
@@ -601,7 +505,6 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
     uint32_t y = input_shape[y_dim_index_in_input];
     uint32_t w = input_shape[rank - 1];
 
-    // X is the new width so we need to pad it to the target tile_shape[1]
     uint32_t x_block_size = tile_shape[1];
     uint32_t w_block_size = tile_shape[1];
 
@@ -616,7 +519,7 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
     uint32_t read_alignment = detail::get_buffer_alignment(input_tensor);
     uint32_t misalignment = read_alignment > subtile_line_bytes ? read_alignment - subtile_line_bytes : 0;
 
-    uint32_t permuted_w_dim = 0;  // Will hold the position of w_dim in the permuted array
+    uint32_t permuted_w_dim = 0;
     for (uint32_t i = 0; i < rank; ++i) {
         if (dims[i] == rank - 1) {
             permuted_w_dim = i;
@@ -629,20 +532,18 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
 
     uint32_t num_faces_w = tile_shape[1] / face_shape[1];
 
-    uint32_t padded_xw_volume = X_p * W_p;
+    uint64_t padded_xw_volume = static_cast<uint64_t>(X_p) * W_p;
     for (uint32_t i = 0; i < rank - 1; i++) {
         if (i == x_dim_index_in_input) {
             continue;
         }
-        padded_xw_volume *= input_shape[i];
+        padded_xw_volume *= static_cast<uint64_t>(input_shape[i]);
     }
 
-    uint32_t xw_blocks = padded_xw_volume / (tile_shape[0] * tile_shape[1]);
+    uint64_t xw_blocks = padded_xw_volume / (tile_shape[0] * tile_shape[1]);
 
     bool needs_x_padding = (x % tile_shape[1] != 0);
-    bool needs_y_padding =
-        (y % tile_shape[0] != 0);  // if H is not moved, we could just keep existing implicit padding instead of
-                                   // re-padding, but it complicates logic, may be worth investigating in the future
+    bool needs_y_padding = (y % tile_shape[0] != 0);
     bool needs_padding = needs_x_padding or needs_y_padding;
 
     uint32_t padding_val_packed = 0;
@@ -653,7 +554,6 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
     if (needs_padding) {
         uint32_t num_packed_values = sizeof(uint32_t) / element_size;
         num_writes = face_shape[1] / num_packed_values;
-
         switch (input_tensor.dtype()) {
             case DataType::INT32:
             case DataType::UINT32: padding_val_packed = pad_value; break;
@@ -674,7 +574,6 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
         }
     }
 
-    // Faces with real data in the final tile along the width dimension, divided up
     uint32_t final_tile_real_w = w % tile_shape[1];
     uint32_t final_tile_real_faces_w =
         w % tile_shape[1] == 0 ? num_faces_w : ((final_tile_real_w + face_shape[1] - 1) / face_shape[1]);
@@ -694,12 +593,10 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
     uint32_t num_input_pages_to_read = 2;
 
     auto compute_with_storage_grid_size = input_tensor.device()->compute_with_storage_grid_size();
-    // CoreCoord compute_with_storage_grid_size = {1u, 1u};
     auto [num_cores, all_cores, core_group_1, core_group_2, num_blocks_per_core_group_1, num_blocks_per_core_group_2] =
         tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, xw_blocks);
 
-    uint32_t padded_num_tensor_tiles = num_output_tiles / (output_tensor.padded_shape()[rank - 2] /
-                                                           tile_shape[0]);  // only last row of Xt should have padding
+    uint32_t padded_num_tensor_tiles = num_output_tiles / (output_tensor.padded_shape()[rank - 2] / tile_shape[0]);
     auto
         [padded_num_cores,
          padded_all_cores,
@@ -714,33 +611,59 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
     tt::DataFormat cb_data_format = tt::tt_metal::datatype_to_dataformat_converter(input_tensor.dtype());
     uint32_t input_page_size = detail::tile_size(tensor_return_value) + misalignment;
 
-    tt::tt_metal::CircularBufferConfig cb_src0_config =
-        tt::tt_metal::CircularBufferConfig(num_input_pages_to_read * input_page_size, {{src0_cb_index, cb_data_format}})
-            .set_page_size(src0_cb_index, input_page_size);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src0_config);
+    ProgramDescriptor desc;
 
-    tt::tt_metal::CircularBufferConfig cb_src1_config =
-        tt::tt_metal::CircularBufferConfig(num_input_pages_to_read * input_page_size, {{src1_cb_index, cb_data_format}})
-            .set_page_size(src1_cb_index, input_page_size);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src1_config);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_input_pages_to_read * input_page_size,
+        .core_ranges = all_cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(src0_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_page_size,
+        }}},
+    });
 
-    tt::tt_metal::CircularBufferConfig cb_src2_config =
-        tt::tt_metal::CircularBufferConfig(num_input_pages_to_read * input_page_size, {{src2_cb_index, cb_data_format}})
-            .set_page_size(src2_cb_index, input_page_size);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_src2_config);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_input_pages_to_read * input_page_size,
+        .core_ranges = all_cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(src1_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_page_size,
+        }}},
+    });
+
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_input_pages_to_read * input_page_size,
+        .core_ranges = all_cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(src2_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_page_size,
+        }}},
+    });
 
     if (needs_y_padding) {
-        tt::tt_metal::CircularBufferConfig cb_padding_cfg =
-            tt::tt_metal::CircularBufferConfig(face_shape[1] * element_size, {{padding_cb_index, cb_data_format}})
-                .set_page_size(padding_cb_index, face_shape[1] * element_size);
-        tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_padding_cfg);
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = face_shape[1] * element_size,
+            .core_ranges = all_cores,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(padding_cb_index),
+                .data_format = cb_data_format,
+                .page_size = face_shape[1] * element_size,
+            }}},
+        });
     }
 
-    uint32_t non_x_rows = num_rows / x;
+    uint64_t non_x_rows = num_rows / x;
 
-    std::vector<uint32_t> reader_compile_time_args = {};
-
-    std::unordered_map<std::string, uint32_t> reader_named_compile_time_args = {
+    // Reader kernel
+    KernelDescriptor reader_desc;
+    reader_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
+        "reader_permute_interleaved_tiled_generic.cpp";
+    reader_desc.core_ranges = all_cores;
+    reader_desc.named_compile_time_args = {
         {"rank", rank},
         {"page_size", input_page_size},
         {"element_size", element_size},
@@ -770,31 +693,29 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
         {"misalignment", misalignment},
         {"read_alignment", read_alignment},
     };
+    reader_desc.config = ReaderConfigDescriptor{};
+    TensorAccessorArgs(*src_buffer, tensor_accessor::ArgConfig::RuntimeTensorShape)
+        .append_to(reader_desc.compile_time_args, reader_desc.common_runtime_args);
 
-    TensorAccessorArgs(*src_buffer).append_to(reader_compile_time_args);
-
-    tt::tt_metal::KernelHandle unary_reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
-        "reader_permute_interleaved_tiled_generic.cpp",
-        all_cores,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_time_args, {}, reader_named_compile_time_args));
-
-    std::vector<uint32_t> compute_kernel_args = {};
-
+    // Compute kernel
     bool fp32_dest_acc_en = cb_data_format == tt::DataFormat::Float32 || cb_data_format == tt::DataFormat::Int32 ||
                             cb_data_format == tt::DataFormat::UInt32;
-    auto compute_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/compute/transpose_xw_tiled.cpp",
-        all_cores,
-        tt::tt_metal::ComputeConfig{
-            .fp32_dest_acc_en = fp32_dest_acc_en,
-            .compile_args = compute_kernel_args,
-        });
 
-    std::vector<uint32_t> writer_compile_time_args = {};
-    std::unordered_map<std::string, uint32_t> writer_named_compile_time_args = {
+    KernelDescriptor compute_desc;
+    compute_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/compute/transpose_xw_tiled.cpp";
+    compute_desc.core_ranges = all_cores;
+    compute_desc.config = ComputeConfigDescriptor{
+        .fp32_dest_acc_en = fp32_dest_acc_en,
+    };
+
+    // Writer kernel
+    KernelDescriptor writer_desc;
+    writer_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
+        "writer_permute_interleaved_tiled_generic.cpp";
+    writer_desc.core_ranges = all_cores;
+    writer_desc.named_compile_time_args = {
         {"rank", rank},
         {"page_size", input_page_size},
         {"element_size", element_size},
@@ -819,107 +740,55 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
         {"needs_y_padding", needs_y_padding},
         {"permuted_w_dim", permuted_w_dim},
     };
-    TensorAccessorArgs(*dst_buffer).append_to(writer_compile_time_args);
-
-    tt::tt_metal::KernelHandle unary_writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
-        "writer_permute_interleaved_tiled_generic.cpp",
-        all_cores,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_time_args, {}, writer_named_compile_time_args));
+    writer_desc.config = WriterConfigDescriptor{};
+    TensorAccessorArgs(*dst_buffer).append_to(writer_desc.compile_time_args);
 
     auto input_shape_view = input_shape.view();
 
-    std::vector<uint32_t> reader_runtime_args = {src_buffer->address(), 0, 0};
-    reader_runtime_args.insert(reader_runtime_args.end(), input_shape_view.begin(), input_shape_view.end());
-    reader_runtime_args.insert(reader_runtime_args.end(), dims.begin(), dims.end());
-
-    std::vector<uint32_t> compute_runtime_args = {0, 0};
-
-    std::vector<uint32_t> writer_runtime_args = {dst_buffer->address(), 0, 0, 0, 0};
-    writer_runtime_args.insert(writer_runtime_args.end(), input_shape_view.begin(), input_shape_view.end());
-    writer_runtime_args.insert(writer_runtime_args.end(), dims.begin(), dims.end());
-
     auto cores = corerange_to_cores(all_cores, std::nullopt);
     uint32_t start_block = 0;
-    uint32_t num_blocks_per_core = 0;
-    uint32_t num_tiles_per_core_padding = 0;
     uint32_t start_tile_padding = 0;
     for (const auto& core : cores) {
+        uint32_t num_blocks_per_core = 0;
         if (core_group_1.contains(core)) {
             num_blocks_per_core = num_blocks_per_core_group_1;
         } else if (core_group_2.contains(core)) {
             num_blocks_per_core = num_blocks_per_core_group_2;
-        } else {
-            // no-op
-            num_blocks_per_core = 0;
         }
+        uint32_t num_tiles_per_core_padding = 0;
         if (needs_padding) {
             if (padded_core_group_1.contains(core)) {
                 num_tiles_per_core_padding = padded_num_tiles_per_core_group_1;
             } else if (padded_core_group_2.contains(core)) {
                 num_tiles_per_core_padding = padded_num_tiles_per_core_group_2;
-            } else {
-                // no-op
-                num_tiles_per_core_padding = 0;
             }
         }
 
         uint32_t end_block = start_block + num_blocks_per_core;
-        reader_runtime_args[1] = start_block;
-        reader_runtime_args[2] = end_block;
+        uint32_t end_tile_padding = start_tile_padding + num_tiles_per_core_padding;
 
-        compute_runtime_args[0] = start_block;
-        compute_runtime_args[1] = end_block;
+        KernelDescriptor::CoreRuntimeArgs reader_args = {src_buffer->address(), start_block, end_block};
+        reader_args.insert(reader_args.end(), input_shape_view.begin(), input_shape_view.end());
+        reader_args.insert(reader_args.end(), dims.begin(), dims.end());
+        reader_desc.runtime_args.emplace_back(core, std::move(reader_args));
 
-        writer_runtime_args[1] = start_block;
-        writer_runtime_args[2] = end_block;
+        compute_desc.runtime_args.emplace_back(core, KernelDescriptor::CoreRuntimeArgs{start_block, end_block});
 
-        if (needs_padding) {
-            uint32_t end_tile_padding = start_tile_padding + num_tiles_per_core_padding;
-            writer_runtime_args[3] = start_tile_padding;
-            writer_runtime_args[4] = end_tile_padding;
-            start_tile_padding = end_tile_padding;
-        }
-
-        tt::tt_metal::SetRuntimeArgs(program, unary_reader_kernel_id, core, reader_runtime_args);
-        tt::tt_metal::SetRuntimeArgs(program, unary_writer_kernel_id, core, writer_runtime_args);
-        tt::tt_metal::SetRuntimeArgs(program, compute_kernel_id, core, compute_runtime_args);
+        KernelDescriptor::CoreRuntimeArgs writer_args = {
+            dst_buffer->address(), start_block, end_block, start_tile_padding, end_tile_padding};
+        writer_args.insert(writer_args.end(), input_shape_view.begin(), input_shape_view.end());
+        writer_args.insert(writer_args.end(), dims.begin(), dims.end());
+        writer_desc.runtime_args.emplace_back(core, std::move(writer_args));
 
         start_block = end_block;
+        start_tile_padding = end_tile_padding;
     }
 
-    return {
-        std::move(program),
-        {.unary_reader_kernel_id = unary_reader_kernel_id,
-         .unary_writer_kernel_id = unary_writer_kernel_id,
-         .compute_kernel_id = compute_kernel_id,
-         .core_range = all_cores}};
-}
+    desc.kernels.push_back(std::move(reader_desc));
+    desc.kernels.push_back(std::move(writer_desc));
+    desc.kernels.push_back(std::move(compute_desc));
 
-void PermuteDeviceOperation::MultiCoreTiledGeneric::override_runtime_arguments(
-    cached_program_t& cached_program,
-    const operation_attributes_t& /*operation_attributes*/,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value) {
-    auto& program = cached_program.program;
-    auto& unary_reader_kernel_id = cached_program.shared_variables.unary_reader_kernel_id;
-    auto& unary_writer_kernel_id = cached_program.shared_variables.unary_writer_kernel_id;
-
-    const auto& input_tensor = tensor_args.input_tensor;
-    auto& output_tensor = tensor_return_value;
-
-    auto* src_buffer = input_tensor.buffer();
-    auto* dst_buffer = output_tensor.buffer();
-    auto& all_cores = cached_program.shared_variables.core_range;
-
-    auto cores = corerange_to_cores(all_cores, std::nullopt);
-    for (const auto& core : cores) {
-        auto& runtime_args = tt::tt_metal::GetRuntimeArgs(program, unary_reader_kernel_id, core);
-        runtime_args[0] = src_buffer->address();
-        auto& runtime_args_writer = tt::tt_metal::GetRuntimeArgs(program, unary_writer_kernel_id, core);
-        runtime_args_writer[0] = dst_buffer->address();
-    }
+    return desc;
 }
 
 }  // namespace ttnn::operations::data_movement

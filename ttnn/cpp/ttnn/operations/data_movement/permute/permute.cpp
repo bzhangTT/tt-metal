@@ -21,7 +21,6 @@ ttnn::Tensor permute_impl(
     const ttnn::SmallVector<uint32_t>& dims,
     const std::optional<MemoryConfig>& output_mem_config,
     float pad_value = 0.0f) {
-    // Get the device
     uint32_t rank = a.logical_shape().rank();
 
     auto prim_permute = [&](const ttnn::Tensor& input) -> ttnn::Tensor {
@@ -29,6 +28,17 @@ ttnn::Tensor permute_impl(
     };
 
     if (rank > 4) {
+        // Sharded rank > 4: run prim::permute to L1-interleaved output, then
+        // convert to the requested sharded config if needed.
+        if (a.is_sharded()) {
+            auto l1_interleaved =
+                MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
+            auto result = ttnn::prim::permute(a, dims, l1_interleaved, std::nullopt, pad_value);
+            if (output_mem_config.has_value() && output_mem_config->is_sharded()) {
+                return ttnn::to_memory_config(result, output_mem_config.value());
+            }
+            return result;
+        }
         return prim_permute(a);
     }
 
@@ -36,7 +46,7 @@ ttnn::Tensor permute_impl(
     uint32_t N = dims[0], C = dims[1], H = dims[2], W = dims[3];
 
     auto formatted_input_tensor = a;
-    // WH and CN should be supported without typecast
+    // WH and CN should be supported without typecast.
     bool wh = N == 0 && C == 1 && H == 3 && W == 2;
     bool cn = N == 1 && C == 0 && H == 2 && W == 3;
     bool cnwh = N == 1 && C == 0 && H == 3 && W == 2;
@@ -60,7 +70,8 @@ ttnn::Tensor permute_impl(
         return ttnn::transpose(input, 0, 1, output_mem_config, 0.0f);
     };
 
-    // Keep limited sharding support with recursive calls
+    // Sharded inputs: decompose into transpose chains when possible, otherwise
+    // fall back to prim::permute with L1-interleaved output.
     if (a.is_sharded()) {
         if (N == 0 && C == 1 && H == 2 && W == 3) {
             output = formatted_input_tensor;
@@ -74,8 +85,15 @@ ttnn::Tensor permute_impl(
             output = transpose_hc(transpose_wh(formatted_input_tensor), output_mem_config);
         } else if (N == 0 && C == 3 && H == 2 && W == 1) {
             output = transpose_wh(transpose_hc(transpose_wh(formatted_input_tensor)), output_mem_config);
+        } else if (N == 1 && C == 0 && H == 2 && W == 3) {
+            output = transpose_cn(formatted_input_tensor);
         } else {
-            output = prim_permute(formatted_input_tensor);
+            auto l1_interleaved =
+                MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
+            output = ttnn::prim::permute(formatted_input_tensor, dims, l1_interleaved, std::nullopt, pad_value);
+            if (output_mem_config.has_value() && output_mem_config->is_sharded()) {
+                output = ttnn::to_memory_config(output, output_mem_config.value());
+            }
         }
     } else {
         if (N == 0 && C == 1 && H == 2 && W == 3) {
@@ -90,7 +108,7 @@ ttnn::Tensor permute_impl(
             output = prim_permute(formatted_input_tensor);
         }
     }
-    // Convert tensor back to original dtype if typecast was performed
+    // Convert back to original dtype if typecast was performed.
     output = typecast ? ttnn::typecast(output, DataType::BFLOAT8_B) : output;
     return output;
 }
@@ -104,52 +122,46 @@ ttnn::Tensor permute_launch(
 }
 
 bool is_permute_nop(const ttnn::Tensor& a, const ttnn::SmallVector<uint32_t>& dims) {
-    // 1) Trivial early-out for rank <= 1
+    // Trivial early-out for rank <= 1.
     const auto rank = a.logical_shape().rank();
     if (rank <= 1) {
         return true;
     }
 
-    // 2) Check for identity permutation
+    // Identity permutation.
     ttnn::SmallVector<uint32_t> seq_dims(rank);
     std::iota(seq_dims.begin(), seq_dims.end(), 0);
     if (dims == seq_dims) {
         return true;
     }
 
-    // 3) Otherwise, when the input is tiled, it is never a NOP if the last two dimensions are permuted. When it is row
-    // major, it is never a NOP if the last dimension is permuted.
+    // For tiled layout, never a NOP if the last two dimensions are permuted.
+    // For row-major, never a NOP if the last dimension is permuted.
     if ((a.layout() == Layout::TILE && (dims[rank - 1] != rank - 1 || dims[rank - 2] != rank - 2)) ||
         (a.layout() == Layout::ROW_MAJOR && dims[rank - 1] != rank - 1)) {
         return false;
     }
 
-    // Build permuted shape
+    // If the shape changed, definitely not a no-op.
     const auto& shape = a.logical_shape();
     ttnn::SmallVector<uint32_t> perm_shape(rank);
     for (uint32_t i = 0; i < rank; ++i) {
         perm_shape[i] = shape[dims[i]];
     }
 
-    // 4) If the shape changed, definitely not a no-op
     if (perm_shape != shape) {
         return false;
     }
 
-    // 5) If the shape stayed the same, ensure we didn't
-    //    relocate a dimension with size > 1
+    // Shape stayed the same — still not a NOP if we relocated a dimension
+    // with size > 1 (changes the physical data layout).
     for (uint32_t i = 0; i < rank; ++i) {
         const uint32_t j = dims[i];
         if (i != j && shape[i] > 1) {
-            // Moved a dimension that has > 1 elements
-            // => layout changed => not a no-op.
             return false;
         }
     }
 
-    // If we made it here, we either
-    //    - only moved dimensions of size 1, or
-    //    - didn't move anything at all
     return true;
 }
 
