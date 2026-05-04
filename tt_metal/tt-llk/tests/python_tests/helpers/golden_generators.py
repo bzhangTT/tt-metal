@@ -2003,6 +2003,44 @@ class EltwiseBinaryGolden(FidelityMasking):
 
     _UNSET = object()
 
+    MATH_FIDELITY_TO_ITER_COUNT = {
+        MathFidelity.LoFi: 0,
+        MathFidelity.HiFi2: 1,
+        MathFidelity.HiFi3: 2,
+        MathFidelity.HiFi4: 3,
+    }
+
+    def _compute_eltwise(
+        self, op, t1, t2, math_format_for_fidelity, math_fidelity, keep_float32=False
+    ):
+        """Compute a single eltwise operation with fidelity masking.
+
+        Args:
+            keep_float32: When True, return float32 result without rounding to
+                bfloat16. For better precision.
+        """
+        fidelity_iter_count = self.MATH_FIDELITY_TO_ITER_COUNT[math_fidelity]
+
+        if keep_float32:
+            t1 = t1.to(torch.float32)
+            t2 = t2.to(torch.float32)
+
+        if op == MathOperation.Elwmul:
+            result = None
+            for fidelity_iter in range(fidelity_iter_count + 1):
+                t1, t2 = self._apply_fidelity_masking(
+                    math_format_for_fidelity, t1, t2, fidelity_iter
+                )
+                phase_result = self.ops[op](t1, t2)
+                if fidelity_iter == 0:
+                    result = phase_result
+                else:
+                    result += phase_result
+        else:
+            result = self.ops[op](t1, t2)
+
+        return result
+
     def __call__(
         self,
         op,
@@ -2012,6 +2050,9 @@ class EltwiseBinaryGolden(FidelityMasking):
         math_fidelity,
         input_format=None,
         input_format_B=_UNSET,
+        acc_to_dest=False,
+        tile_shape=None,
+        num_tiles_per_accumulation=1,
     ):
         if tile_shape is None:
             tile_shape = construct_tile_shape()
@@ -2049,6 +2090,8 @@ class EltwiseBinaryGolden(FidelityMasking):
             tile_size = tile_shape.total_tile_size()
             num_total_tiles = t1.numel() // tile_size
             num_blocks = num_total_tiles // num_tiles_per_accumulation
+
+            fidelity_iter_count = self.MATH_FIDELITY_TO_ITER_COUNT[math_fidelity]
 
             if op == MathOperation.Elwmul:
                 # Special handling for Elwmul with fidelity iteration
