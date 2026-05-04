@@ -261,7 +261,7 @@ class SD35TransformerBlock(Module):
             )
 
         spatial_ff_1BND = self.ff(spatial_normed_1BND)
-        spatial_ff_1BND = spatial_ff_1BND * spatial_gate_ff
+        spatial_ff_1BND = ttnn.mul(spatial_ff_1BND, spatial_gate_ff, use_legacy=True)  # TODO: add github issue link
 
         spatial_1BND += spatial_ff_1BND
 
@@ -291,7 +291,7 @@ class SD35TransformerBlock(Module):
             )
 
         prompt_ff_1BLD = self.ff_context(prompt_normed_1BLD)
-        prompt_ff_1BLD = prompt_ff_1BLD * prompt_gate_ff
+        prompt_ff_1BLD = ttnn.mul(prompt_ff_1BLD, prompt_gate_ff, use_legacy=True)  # TODO: add github issue link
 
         prompt_1BLD += prompt_ff_1BLD
 

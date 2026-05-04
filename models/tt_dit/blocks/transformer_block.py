@@ -324,7 +324,7 @@ class TransformerBlock(Module):
         )
 
         prompt_ff = ttnn.squeeze(self.ff_context(ttnn.unsqueeze(prompt_normed, 0)), 0)
-        prompt_ff = prompt_ff * prompt_gate_ff
+        prompt_ff = ttnn.mul(prompt_ff, prompt_gate_ff, use_legacy=True)  # TODO: add github issue link
 
         prompt = prompt + prompt_ff
 
