@@ -72,3 +72,11 @@ inline void _llk_math_eltwise_unary_sfpu_params_(
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
     math::clear_addr_mod_base();
 }
+
+// Backward-compatible overload: old-style callers pass (callback, dst_index, int vector_mode, ...).
+// The int second arg distinguishes this from the primary overload's uint32_t dst_index_out.
+template <typename Callable, typename... Args>
+inline void _llk_math_eltwise_unary_sfpu_params_(Callable&& sfpu_func, std::uint32_t dst_index, int vector_mode, Args&&... args)
+{
+    _llk_math_eltwise_unary_sfpu_params_(std::forward<Callable>(sfpu_func), dst_index, dst_index, vector_mode, std::forward<Args>(args)...);
+}
