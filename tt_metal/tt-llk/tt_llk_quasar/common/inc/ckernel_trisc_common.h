@@ -90,7 +90,7 @@ enum DataFormatConfigSet : std::uint8_t
 };
 
 // Global variable used to track the data format config state
-inline DataFormatConfigSet data_format_config_set = DataFormatConfigSet::DEFAULT;
+static DataFormatConfigSet data_format_config_set = DataFormatConfigSet::DEFAULT;
 
 /**
 * @brief Check divisibility by power of 2
@@ -254,7 +254,7 @@ inline void t6_semaphore_get(const std::uint8_t index)
     TTI_SEMGET(0, semaphore::t6_sem(index));
 }
 
-struct mutex
+struct hw_mutex
 {
     constexpr static std::uint32_t REG_RMW = 0; // used for atomic register read-modify-write from different threads
 };
@@ -396,7 +396,7 @@ inline void _configure_alu_formats_(DataFormat srcA_format, DataFormat srcB_form
 template <bool EN_IMPLIED_MATH_FORMAT, bool EN_32BIT_DEST>
 inline void _configure_default_data_format_state_(DataFormat srcA_format, DataFormat srcB_format)
 {
-    t6_mutex_acquire(mutex::REG_RMW);
+    t6_mutex_acquire(hw_mutex::REG_RMW);
     if (data_format_config_set != DataFormatConfigSet::DEFAULT)
     {
         TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::WAIT_SFPU, p_stall::MATH);
@@ -419,21 +419,22 @@ inline void _configure_default_data_format_state_(DataFormat srcA_format, DataFo
 
         data_format_config_set = DataFormatConfigSet::DEFAULT;
     }
-    t6_mutex_release(mutex::REG_RMW);
+    t6_mutex_release(hw_mutex::REG_RMW);
 }
 
 /**
  * @brief Sets up MOV SRC2DST 32bit ops ALU data format state
- * This is used for transpose dest operations when Int32 or Fp32 dest is used.
+ * Used for transpose dest operations when Int32 or Fp32 dest is used.
  * Implied math format is disabled, and Int32 dest requires opposite settings that what is usually set for Int32 dest.
+ * Float32 and Int32 can be set as the srcA and srcB formats.
  * @param srcA_format: Input srcA format, used to set ALU configs
- * values = Dataformat enum, ex: <Float16/Float16_b/Tf32/Int8/Int16/UInt8>
+ * values = Dataformat enum, ex: <Float16/Float16_b/Tf32/Float32/Int8/Int16/UInt8/Int32>
  * @param srcB_format: Input srcB format, used to set ALU configs
- * values = Dataformat enum, ex: <Float16/Float16_b/Tf32/Int8/Int16/UInt8>
+ * values = Dataformat enum, ex: <Float16/Float16_b/Tf32/Float32/Int8/Int16/UInt8/Int32>
  */
 inline void _configure_mov_src2dst_32bit_ops_data_format_state_(DataFormat srcA_format, DataFormat srcB_format)
 {
-    t6_mutex_acquire(mutex::REG_RMW);
+    t6_mutex_acquire(hw_mutex::REG_RMW);
     if (data_format_config_set != DataFormatConfigSet::MOV_SRC2DST_32BIT_OPS)
     {
         TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::WAIT_SFPU, p_stall::MATH);
@@ -443,7 +444,7 @@ inline void _configure_mov_src2dst_32bit_ops_data_format_state_(DataFormat srcA_
 
         data_format_config_set = DataFormatConfigSet::MOV_SRC2DST_32BIT_OPS;
     }
-    t6_mutex_release(mutex::REG_RMW);
+    t6_mutex_release(hw_mutex::REG_RMW);
 }
 
 } // namespace ckernel::trisc
