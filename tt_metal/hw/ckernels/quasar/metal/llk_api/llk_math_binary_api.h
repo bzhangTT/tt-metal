@@ -44,7 +44,7 @@ inline void llk_math_eltwise_binary_init(bool acc_to_dest = false) {
  *     when input is Tf32 format. Only applicable to ELWMUL.
  * @tparam binary_reuse_dest: When not NONE, reuses the destination register as SrcA or SrcB
  * @param operand_A: Logical dataflow buffer id for input A, used to derive the tensor shape
- * @param operand_B: Unused on Quasar. Present for API compatibility.
+ * @param operand_B: Logical dataflow buffer id for input B
  * @param acc_to_dest: Flag to control if the result should be accumulated with the current dest
  */
 template <
@@ -53,12 +53,16 @@ template <
     MathFidelity math_fidelity,
     EltwiseBinaryReuseDestType binary_reuse_dest = EltwiseBinaryReuseDestType::NONE>
 inline void llk_math_eltwise_binary_init_with_operands(
-    const std::uint32_t operand_A, [[maybe_unused]] const std::uint32_t operand_B, bool acc_to_dest = false) {
+    const std::uint32_t operand_A, const std::uint32_t operand_B, bool acc_to_dest = false) {
     static_assert(src_b_bcast_type == BroadcastType::NONE, "Broadcast types will be added in a future update");
 
-    const std::uint32_t operand_id = get_operand_id(operand_A);
-    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operand_id);
+    const std::uint32_t operandA_id = get_operand_id(operand_A);
+    const std::uint32_t operandB_id = get_operand_id(operand_B);
+    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operandA_id);
+    const DataFormat srcA_format = static_cast<DataFormat>(get_operand_dst_format(operandA_id));
+    const DataFormat srcB_format = static_cast<DataFormat>(get_operand_dst_format(operandB_id));
 
+    _configure_default_data_format_state_<false /* IMPLIED_MATH_FORMAT */, DST_ACCUM_MODE>(srcA_format, srcB_format);
     _llk_math_eltwise_binary_init_<eltwise_binary_type, math_fidelity, binary_reuse_dest>(tensor_shape_A, acc_to_dest);
 }
 
