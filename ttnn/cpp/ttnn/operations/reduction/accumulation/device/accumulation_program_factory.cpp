@@ -86,6 +86,12 @@ tt::tt_metal::ProgramDescriptor AccumulationProgramFactory::create_descriptor(
         num_cores > 0,
         "Accumulation (cumsum/cumprod) requires at least one worker core; num_rows_total={}",
         num_rows_total);
+    const auto cores = tt::tt_metal::corerange_to_cores(all_cores, num_cores, false);
+    TT_FATAL(
+        cores.size() == num_cores,
+        "Accumulation resolved core list size {} must match split num_cores {}",
+        cores.size(),
+        num_cores);
 
     {
         using namespace tt::tt_metal;
