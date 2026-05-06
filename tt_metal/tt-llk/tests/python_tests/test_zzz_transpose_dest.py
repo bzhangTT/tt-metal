@@ -129,9 +129,11 @@ def test_transpose_dest_int(
 
 
 def transpose_dest(formats, dest_acc, math_transpose_faces, unpack_to_dest):
-
-    if dest_acc == DestAccumulation.Yes and formats.input_format != DataFormat.Int32:
-        pytest.skip("32-bit dest tests fail for Float formats due to bit No.11 issue.")
+    if dest_acc == DestAccumulation.Yes and formats.input_format not in (
+        DataFormat.Int32,
+        DataFormat.Float32,
+    ):
+        pytest.skip("32-bit dest only supported for Int32 and Float32 formats.")
 
     input_dimensions = [64, 64]
 
@@ -212,6 +214,15 @@ def transpose_dest(formats, dest_acc, math_transpose_faces, unpack_to_dest):
     torch_format = format_dict[formats.output_format]
     res_tensor = torch.tensor(res_from_L1, dtype=torch_format)
 
-    assert passed_test(
-        golden_tensor, res_tensor, formats.output_format
-    ), "Assert against golden failed"
+    if (
+        unpack_to_dest == True
+        and dest_acc == DestAccumulation.Yes
+        and formats.input_format in (DataFormat.Int32, DataFormat.Float32)
+        and formats.output_format in (DataFormat.Int32, DataFormat.Float32)
+    ):
+        is_equal = torch.equal(res_tensor, golden_tensor)
+        assert is_equal, "Assert against golden failed"
+    else:
+        assert passed_test(
+            golden_tensor, res_tensor, formats.output_format
+        ), "Assert against golden failed"
