@@ -17,12 +17,8 @@ public:
     HostTensorImpl& operator=(HostTensorImpl&& other) noexcept = default;
     ~HostTensorImpl() = default;
 
-    // Two step construction for HostTensor,
-    // for transiet purpose.
-    HostTensorImpl(HostTensorImpl&& other, TensorSpec spec, TensorTopology topology) :
-        buffer_(std::move(other.buffer_)), spec_(std::move(spec)), topology_(std::move(topology)) {}
-
     const DistributedHostBuffer& buffer() const& { return buffer_; }
+    DistributedHostBuffer& buffer() & { return buffer_; }
     DistributedHostBuffer buffer() const&& { return buffer_; }
     const TensorSpec& spec() const { return spec_; }
     const TensorTopology& topology() const { return topology_; }
@@ -54,11 +50,6 @@ HostTensor::HostTensor(HostBuffer buffer, TensorSpec spec, TensorTopology topolo
         CMAKE_UNIQUE_NAMESPACE::create_unit_distributed_host_buffer(std::move(buffer)),
         std::move(spec),
         std::move(topology))) {}
-
-HostTensor::HostTensor(HostTensor&& other, TensorSpec spec, TensorTopology topology) {
-    TT_FATAL(other.impl != nullptr, "Cannot move from a default-constructed or moved-from HostTensor.");
-    impl = std::make_unique<HostTensorImpl>(std::move(*other.impl), std::move(spec), std::move(topology));
-}
 
 HostTensor::HostTensor(const HostTensor& other) :
     impl(other.impl ? std::make_unique<HostTensorImpl>(*other.impl) : nullptr) {}
@@ -92,6 +83,11 @@ const TensorTopology& HostTensor::tensor_topology() const {
 
 const DistributedHostBuffer& HostTensor::buffer() const {
     TT_ASSERT(impl != nullptr, "HostTensor is in default constructed state.");
+    return impl->buffer();
+}
+
+DistributedHostBuffer& HostTensor::buffer() {
+    TT_FATAL(impl != nullptr, "HostTensor is in default constructed state.");
     return impl->buffer();
 }
 

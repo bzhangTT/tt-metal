@@ -77,7 +77,7 @@ class MathOperation(Enum):
     Hardsigmoid = OpSpec("hardsigmoid", MathOpType.SFPU_UNARY)
     Log = OpSpec("log", MathOpType.SFPU_UNARY)
     Log1p = OpSpec("log1p", MathOpType.SFPU_UNARY)
-    Neg = OpSpec("neg", MathOpType.SFPU_UNARY)
+    Neg = OpSpec("negative", MathOpType.SFPU_UNARY)
     Reciprocal = OpSpec("reciprocal", MathOpType.SFPU_UNARY)
     Relu = OpSpec("relu", MathOpType.SFPU_UNARY)
     Rsqrt = OpSpec("rsqrt", MathOpType.SFPU_UNARY)
@@ -170,9 +170,13 @@ REDUCE_OPERATIONS = MathOperation.get_reduce_operations()
 
 
 class ReduceDimension(Enum):
-    Column = auto()
-    Row = auto()
-    Scalar = auto()
+    Column = "REDUCE_COL"
+    Row = "REDUCE_ROW"
+    Scalar = "REDUCE_SCALAR"
+
+    @property
+    def cpp_enum_value(self):
+        return f"ReduceDim::{self.value}"
 
 
 class ReducePool(Enum):
@@ -192,10 +196,7 @@ class DestAccumulation(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class L1Accumulation(Enum):
@@ -245,10 +246,7 @@ class Haloize(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class ApproximationMode(Enum):
@@ -257,10 +255,7 @@ class ApproximationMode(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class Transpose(Enum):
@@ -269,10 +264,7 @@ class Transpose(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class MathFidelity(Enum):
@@ -301,10 +293,52 @@ class NarrowTile(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
+
+
+class PartialFace(Enum):
+    Yes = True
+    No = False
+
+    @property
+    def cpp_enum_value(self):
+        return str(self.value).lower()
+
+
+class EnforceFP32Accumulation(Enum):
+    Yes = True
+    No = False
+
+    @property
+    def cpp_enum_value(self):
+        return str(self.value).lower()
+
+
+class ClearFP32DstAcc(Enum):
+    Yes = True
+    No = False
+
+    @property
+    def cpp_enum_value(self):
+        return str(self.value).lower()
+
+
+class AccToDest(Enum):
+    Yes = True
+    No = False
+
+    @property
+    def cpp_enum_value(self):
+        return str(self.value).lower()
+
+
+class UnpackToDest(Enum):
+    Yes = True
+    No = False
+
+    @property
+    def cpp_enum_value(self):
+        return str(self.value).lower()
 
 
 class Tilize(Enum):
@@ -313,10 +347,7 @@ class Tilize(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class FastMode(Enum):
@@ -325,10 +356,7 @@ class FastMode(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class StableSort(Enum):
@@ -337,10 +365,7 @@ class StableSort(Enum):
 
     @property
     def cpp_enum_value(self):
-        if self.value == True:
-            return "true"
-        else:
-            return "false"
+        return str(self.value).lower()
 
 
 class Mailboxes(Enum):
@@ -350,6 +375,8 @@ class Mailboxes(Enum):
     BriscCommand0 = Unpacker + 12
     BriscCommand1 = Unpacker + 16
     BriscCounter = Unpacker + 20
+    BriscBread0 = Unpacker + 24
+    BriscBread1 = Unpacker + 28
 
 
 class MailboxesCoverage(Enum):
@@ -359,6 +386,8 @@ class MailboxesCoverage(Enum):
     BriscCommand0 = Unpacker + 12
     BriscCommand1 = Unpacker + 16
     BriscCounter = Unpacker + 20
+    BriscBread0 = Unpacker + 24
+    BriscBread1 = Unpacker + 28
 
 
 class MailboxesQuasar(Enum):
@@ -484,6 +513,11 @@ class ReluConfig(Enum):
 class TopKSortDirection(Enum):
     Descending = 0
     Ascending = 1
+
+
+class GoldenType(Enum):
+    L1_GOLDEN = "L1_GOLDEN"
+    MASTER_GOLDEN = "MASTER_GOLDEN"
 
 
 # *********************************

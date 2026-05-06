@@ -68,14 +68,14 @@ ALWI void pack_untilize_dest_init(
 #ifdef ARCH_BLACKHOLE
     // Needed for setting swizzle_32b:
     MATH((llk_math_reconfig_remap(true)));
-#endif // TODO NC: A workaround for tt-metal#17132. Should be addressed more systematically in tt-llk#989
-    LLK_ASSERT(narrow_row == false, "narrow_row not supported on Quasar");
+#endif  // TODO NC: A workaround for tt-metal#17132. Should be addressed more systematically in tt-llk#989
     PACK(
         (llk_pack_untilize_hw_configure_disaggregated<DST_ACCUM_MODE, false /*untilize*/>(ocb, face_r_dim, num_faces)));
     PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(
         ocb, face_r_dim, num_faces)));
     PACK((llk_init_packer_dest_offset_registers<true, false>()));
 #else
+    LLK_ASSERT(narrow_row == false, "narrow_row not supported on Quasar");
     PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim>(ocb)));
 #endif
 }
@@ -118,7 +118,7 @@ ALWI void pack_untilize_init(uint32_t icb, uint32_t ocb, uint32_t call_line = __
     state_configure<Operand::SRCA, Operand::PACK>(icb, ocb, call_line);
     UNPACK((llk_unpack_A_init<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, UnpackToDestEn>(
         false, false, icb)));  // init must be after configure
-    MATH((llk_math_eltwise_unary_datacopy_init<A2D, DST_ACCUM_MODE, BroadcastType::NONE>(icb)));
+    MATH((llk_math_eltwise_unary_datacopy_init<DataCopyType::A2D, DST_ACCUM_MODE, BroadcastType::NONE>(icb)));
 #else
     UNPACK((llk_unpack_A_init</*TRANSPOSE_EN=*/false, DST_ACCUM_MODE>(icb)));
     MATH((llk_math_eltwise_unary_datacopy_init<DataCopyType::A2D, DST_ACCUM_MODE>(icb)));
@@ -159,7 +159,9 @@ ALWI void pack_untilize_block(uint32_t icb, uint32_t block_rt_dim, uint32_t ocb,
 #ifndef ARCH_QUASAR
             UNPACK(
                 (llk_unpack_A<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, UnpackToDestEn>(icb, c)));
-            MATH((llk_math_eltwise_unary_datacopy<A2D, DST_ACCUM_MODE, BroadcastType::NONE, UnpackToDestEn>(c)));
+            MATH((
+                llk_math_eltwise_unary_datacopy<DataCopyType::A2D, DST_ACCUM_MODE, BroadcastType::NONE, UnpackToDestEn>(
+                    c, icb)));
 #else
             UNPACK((llk_unpack_A(icb, c)));
             MATH((llk_math_eltwise_unary_datacopy(c, icb)));

@@ -76,13 +76,6 @@ public:
      */
     explicit HostTensor(HostBuffer buffer, TensorSpec spec, TensorTopology topology);
 
-    /**
-     * Move constructor with new spec and topology.
-     * Moves the buffer from other and uses the provided spec/topology.
-     * This is meant for transition as TTNN-Tensor current has a two-step construction for HostTensor.
-     */
-    HostTensor(HostTensor&& other, TensorSpec spec, TensorTopology topology);
-
     ~HostTensor();
 
     /**
@@ -131,7 +124,7 @@ public:
      * The data in the buffer is copied into a tensor with host storage.
      */
     template <typename T>
-    static HostTensor from_span(std::span<T> buffer, const TensorSpec& spec, T pad_value = 0);
+    static HostTensor from_span(std::span<const T> buffer, const TensorSpec& spec, T pad_value = 0);
 
     /**
      * Creates a `Tensor` with storage "borrowed" from the buffer of elements of type `T`.
@@ -186,6 +179,11 @@ public:
      * pre-condition: The HostTensor must be engaged.
      */
     const DistributedHostBuffer& buffer() const;
+
+    // TODO(#40348): This should be removed.
+    // We need to maintain invariant of this buffer.
+    // Giving out mutable reference allows user to assign into it.
+    DistributedHostBuffer& buffer();
 
     // Derivables:
 

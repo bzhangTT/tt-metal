@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -16,9 +17,10 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from enum import Enum
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import click
 import yaml
@@ -974,10 +976,36 @@ def default_multihost_mpi_args(tcp_interface: Optional[str]) -> List[str]:
 class RankBinding(BaseModel):
     """Binding between MPI rank to target MeshId and MeshHostRankId as defined in the mesh graph descriptor."""
 
+    model_config = {"arbitrary_types_allowed": True}
+
     rank: int = Field(..., ge=0, description="MPI rank (must be >= 0)")
     mesh_id: int = Field(..., ge=0, description="`MeshId` defines the mesh to which the rank belongs")
     mesh_host_rank: Optional[int] = Field(None, ge=0, description="Host rank within the mesh")
     env_overrides: Dict[str, str] = Field(default_factory=dict, description="Environment variable overrides")
+    subcontext_id: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Launcher sub-context id when using merged --rank-bindings-mapping (sets TT_RUN_SUBCONTEXT_ID)",
+    )
+    subcontext_size: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Number of ranks in this sub-context (merged mapping only; folded into TT_RUN_SUBCONTEXT_SIZES)",
+    )
+    mesh_graph_desc_path: Optional[Path] = Field(
+        None,
+        description=(
+            "When set (e.g. from merged --rank-bindings-mapping), overrides TTRunConfig.mesh_graph_desc_path "
+            "for TT_MESH_GRAPH_DESC_PATH for this rank only."
+        ),
+    )
+
+    @field_validator("mesh_graph_desc_path", mode="before")
+    @classmethod
+    def validate_optional_per_rank_mesh(cls, v: Union[str, Path, None]) -> Optional[Path]:
+        if v is None or v == "":
+            return None
+        return resolve_path(v, description="Per-rank mesh graph descriptor", must_be_file=True)
 
 
 class TTRunConfig(BaseModel):
@@ -1161,7 +1189,6 @@ def parse_binding_config(
     except ValidationError as e:
         raise ValueError(f"Invalid configuration: {e}")
 
-    # Parse mock cluster rank binding configuration
     if mock_cluster_rank_binding:
         resolved_mock_path = resolve_path(
             mock_cluster_rank_binding, description="Mock cluster rank binding configuration", must_be_file=True
@@ -1169,6 +1196,187 @@ def parse_binding_config(
         config.mock_cluster_rank_binding = load_mock_rank_to_descriptors(resolved_mock_path)
 
     return config
+
+
+DEFAULT_TRACY_BASE_PORT = 8087
+
+
+@dataclass
+class TracyConfig:
+    output_root: Path
+    base_port: int
+    passthrough_args: List[str]
+
+
+def parse_tracy_args(raw: str) -> TracyConfig:
+    """Parse a raw tracy argument string, extracting port and output root for per-rank handling.
+
+    Recognises -t/--port and -o/--output-folder from python -m tracy's interface.
+    Those two values are consumed (they become per-rank); everything else is
+    forwarded verbatim so that new tracy options work without ttrun changes.
+    """
+    tokens = shlex.split(raw) if raw else []
+    base_port = DEFAULT_TRACY_BASE_PORT
+    output_root: Optional[Path] = None
+    passthrough: List[str] = []
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        # Handle --port=8087 / -t=8087 styles
+        if token.startswith("--port=") or token.startswith("-t="):
+            value = token.split("=", 1)[1]
+            if not value:
+                raise ValueError("Tracy port option -t/--port requires a value")
+            base_port = int(value)
+            i += 1
+        # Handle --output-folder=/path / -o=/path styles
+        elif token.startswith("--output-folder=") or token.startswith("-o="):
+            value = token.split("=", 1)[1]
+            if not value:
+                raise ValueError("Tracy output option -o/--output-folder requires a value")
+            output_root = Path(value)
+            i += 1
+        # Handle space-separated -t 8087 / --port 8087
+        elif token in ("-t", "--port"):
+            if i + 1 >= len(tokens):
+                raise ValueError("Tracy port option -t/--port requires a value")
+            base_port = int(tokens[i + 1])
+            i += 2
+        # Handle space-separated -o /path / --output-folder /path
+        elif token in ("-o", "--output-folder"):
+            if i + 1 >= len(tokens):
+                raise ValueError("Tracy output option -o/--output-folder requires a value")
+            output_root = Path(tokens[i + 1])
+            i += 2
+        else:
+            passthrough.append(token)
+            i += 1
+
+    if output_root is None:
+        # Match tt-run's environment propagation: prefer TT_METAL_HOME, then ORIGINAL_CWD,
+        # and finally fall back to the module-level ORIGINAL_CWD captured at import time.
+        tt_metal_home = os.environ.get("TT_METAL_HOME")
+        if tt_metal_home is None:
+            original_cwd_env = os.environ.get("ORIGINAL_CWD")
+            base_dir = Path(original_cwd_env) if original_cwd_env is not None else ORIGINAL_CWD
+        else:
+            base_dir = Path(tt_metal_home)
+        output_root = base_dir / "generated/profiler/ttrun"
+
+    output_root = output_root.expanduser().resolve()
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError) as exc:
+        # Surface filesystem issues as user-level configuration errors; the CLI wraps ValueError into ClickException.
+        raise ValueError(f"Unable to create tracy output directory '{output_root}': {exc}") from exc
+
+    if base_port <= 0:
+        raise ValueError("Tracy base port must be a positive integer")
+
+    return TracyConfig(output_root=output_root, base_port=base_port, passthrough_args=passthrough)
+
+
+def parse_rank_bindings_mapping(
+    mapping_yaml_path: Path,
+    mock_cluster_rank_binding: Optional[Path] = None,
+    skip_mgd_check: bool = False,
+) -> TTRunConfig:
+    """Load subcontext_id_to_rank_bindings, merge overlays into one TTRunConfig (global MPI ranks)."""
+    resolved_mapping = resolve_path(mapping_yaml_path, description="Rank bindings mapping file", must_be_file=True)
+    mapping_dir = resolved_mapping.parent
+
+    with open(resolved_mapping, "r") as f:
+        data = yaml.safe_load(f)
+
+    map_key = "subcontext_id_to_rank_bindings"
+    if not data or map_key not in data:
+        raise ValueError(f"Rank bindings mapping must contain '{map_key}'")
+
+    raw_map = data[map_key]
+    if not raw_map:
+        raise ValueError(f"'{map_key}' must not be empty")
+
+    raw_keys = list(raw_map.keys())
+    try:
+        sub_ids = [int(k) for k in raw_keys]
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"'{map_key}' keys must be integers (got {raw_keys}): {e}")
+    expected_ids = list(range(len(sub_ids)))
+    if sub_ids != expected_ids:
+        raise ValueError(
+            f"'{map_key}' keys must be dense and monotonic starting at 0 " f"(expected {expected_ids}, got {sub_ids})"
+        )
+    merged_rank_bindings: List[RankBinding] = []
+    first_mesh: Optional[Path] = None
+    merged_global_env: Dict[str, str] = {}
+    global_offset = 0
+
+    for sub_id in raw_keys:
+        overlay_value = raw_map[sub_id]
+        overlay_path = Path(overlay_value)
+        if not overlay_path.is_absolute():
+            candidate = (mapping_dir / overlay_path).resolve()
+            if candidate.is_file():
+                sub_config = parse_binding_config(candidate, None, skip_mgd_check=skip_mgd_check)
+            else:
+                sub_config = parse_binding_config(overlay_path, None, skip_mgd_check=skip_mgd_check)
+        else:
+            sub_config = parse_binding_config(overlay_path, None, skip_mgd_check=skip_mgd_check)
+
+        if first_mesh is None:
+            first_mesh = sub_config.mesh_graph_desc_path
+            merged_global_env = dict(sub_config.global_env)
+        else:
+            for k, v in sub_config.global_env.items():
+                if k in merged_global_env and merged_global_env[k] != v:
+                    raise ValueError(f"global_env conflict on key {k!r} between sub-contexts")
+                merged_global_env[k] = v
+
+        sub_n = len(sub_config.rank_bindings)
+        sid_int = int(sub_id)
+        for binding in sorted(sub_config.rank_bindings, key=lambda b: b.rank):
+            merged_rank_bindings.append(
+                binding.model_copy(
+                    update={
+                        "rank": global_offset + binding.rank,
+                        "subcontext_id": sid_int,
+                        "subcontext_size": sub_n,
+                        "mesh_graph_desc_path": sub_config.mesh_graph_desc_path,
+                    }
+                )
+            )
+        global_offset += sub_n
+
+    size_per_sub: Dict[int, int] = {}
+    for b in merged_rank_bindings:
+        if b.subcontext_id is not None and b.subcontext_size is not None:
+            size_per_sub[int(b.subcontext_id)] = int(b.subcontext_size)
+    if size_per_sub:
+        merged_global_env["TT_RUN_SUBCONTEXT_SIZES"] = ",".join(str(size_per_sub[i]) for i in sorted(size_per_sub))
+
+    merged = TTRunConfig(
+        rank_bindings=merged_rank_bindings,
+        global_env=merged_global_env,
+        mesh_graph_desc_path=first_mesh,  # type: ignore[arg-type]
+        mock_cluster_rank_binding={},
+    )
+
+    if mock_cluster_rank_binding:
+        resolved_mock_path = resolve_path(
+            mock_cluster_rank_binding, description="Mock cluster rank binding configuration", must_be_file=True
+        )
+        resolved_mock_bindings = load_mock_rank_to_descriptors(resolved_mock_path)
+        expected_ranks = set(range(global_offset))
+        if set(resolved_mock_bindings.keys()) != expected_ranks:
+            raise ValueError(
+                f"Mock cluster mapping ranks {sorted(resolved_mock_bindings.keys())} "
+                f"do not match merged rank bindings {sorted(expected_ranks)}"
+            )
+        merged.mock_cluster_rank_binding = resolved_mock_bindings
+
+    return merged
 
 
 # Environment variable prefixes that should be automatically passed through to MPI processes
@@ -1203,6 +1411,8 @@ ENV_BLOCKLIST = frozenset(
         "TT_MESH_HOST_RANK",  # Host rank within mesh from rank binding
         "TT_MESH_GRAPH_DESC_PATH",  # Path to mesh graph descriptor from config
         "TT_RUN_ORIGINAL_CWD",  # Always set to ORIGINAL_CWD by tt-run
+        "TT_RUN_SUBCONTEXT_ID",  # Set when using merged rank-bindings mapping
+        "TT_RUN_SUBCONTEXT_SIZES",
         "TT_METAL_MOCK_CLUSTER_DESC_PATH",  # Mock cluster path for testing
         # Should only come from rank binding env_overrides
         "TT_VISIBLE_DEVICES",  # Per-rank device visibility - must be set via rank bindings
@@ -1246,6 +1456,7 @@ def get_rank_environment(
     config: TTRunConfig,
     *,
     parent_env_prefix: Optional[Dict[str, str]] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     """Get all environment variables for a specific rank.
 
@@ -1265,12 +1476,16 @@ def get_rank_environment(
     # This assumes the launch directory is on a shared filesystem (NFS) visible to all nodes.
     default_tt_metal_home = os.environ.get("TT_METAL_HOME", str(ORIGINAL_CWD))
 
+    mesh_graph_path = (
+        binding.mesh_graph_desc_path if binding.mesh_graph_desc_path is not None else config.mesh_graph_desc_path
+    )
+
     # Set/override core tt-run managed variables
     # Note: Path objects are converted to str here at the env var boundary
     env.update(
         {
             "TT_MESH_ID": str(binding.mesh_id),
-            "TT_MESH_GRAPH_DESC_PATH": str(config.mesh_graph_desc_path),
+            "TT_MESH_GRAPH_DESC_PATH": str(mesh_graph_path),
             "TT_METAL_HOME": default_tt_metal_home,
             "TT_METAL_RUNTIME_ROOT": os.environ.get("TT_METAL_RUNTIME_ROOT", default_tt_metal_home),
             "PYTHONPATH": os.environ.get("PYTHONPATH", str(ORIGINAL_CWD)),
@@ -1303,6 +1518,9 @@ def get_rank_environment(
     if binding.mesh_host_rank is not None:
         env["TT_MESH_HOST_RANK"] = str(binding.mesh_host_rank)
 
+    if binding.subcontext_id is not None:
+        env["TT_RUN_SUBCONTEXT_ID"] = str(binding.subcontext_id)
+
     if config.mock_cluster_rank_binding:
         env["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(config.mock_cluster_rank_binding[binding.rank])
 
@@ -1312,6 +1530,9 @@ def get_rank_environment(
     # Rank-specific overrides last (higher precedence)
     env.update({k: os.path.expandvars(v) for k, v in binding.env_overrides.items()})
 
+    if extra_env:
+        env.update(extra_env)
+
     return env
 
 
@@ -1320,6 +1541,7 @@ def build_rank_environment_args(
     config: TTRunConfig,
     *,
     parent_env_prefix: Optional[Dict[str, str]] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """Build environment variable arguments for mpirun.
 
@@ -1333,7 +1555,7 @@ def build_rank_environment_args(
         List of ["-x", "KEY=value"] arguments for mpirun
     """
     env_args = []
-    env = get_rank_environment(binding, config, parent_env_prefix=parent_env_prefix)
+    env = get_rank_environment(binding, config, parent_env_prefix=parent_env_prefix, extra_env=extra_env)
 
     for key, value in env.items():
         env_args.extend(["-x", f"{key}={value}"])
@@ -1574,6 +1796,7 @@ def build_mpi_command(
     mpi_args: Optional[List[str]] = None,
     debug_gdbserver: bool = False,
     rankfile_syntax: Optional[RankfileSyntax] = None,
+    tracy_config: Optional[TracyConfig] = None,
 ) -> List[str]:
     """Build OpenMPI command with per-rank environment variables."""
     mpi_launcher = get_mpi_launcher()
@@ -1608,18 +1831,122 @@ def build_mpi_command(
             cmd.append(":")
 
         cmd.extend(["-np", "1"])
-        cmd.extend(build_rank_environment_args(binding, config, parent_env_prefix=parent_env_prefix))
-        program_to_run = program
+        tracy_env: Dict[str, str] = {}
+        rank_program = program
+        if tracy_config:
+            rank_program, tracy_env = wrap_program_with_tracy(program, binding, tracy_config)
+        cmd.extend(
+            build_rank_environment_args(binding, config, parent_env_prefix=parent_env_prefix, extra_env=tracy_env)
+        )
         if debug_gdbserver:
             port = 20000 + binding.rank
             echo_part = f'echo "Rank {binding.rank} on $(hostname) listening on :{port}";'
             gdbserver_part = f"exec gdbserver :{port}"
-            quoted_program_args = " ".join(shlex.quote(arg) for arg in program)
+            quoted_program_args = " ".join(shlex.quote(arg) for arg in rank_program)
             cmd_str = f"{echo_part} {gdbserver_part} {quoted_program_args}"
-            program_to_run = ["bash", "-c", cmd_str]
-        cmd.extend(program_to_run)
+            rank_program = ["bash", "-c", cmd_str]
+        cmd.extend(rank_program)
 
     return cmd
+
+
+def _is_python_entry_point(path: str) -> bool:
+    """Check if an executable is a Python console_scripts entry point by examining its shebang."""
+    try:
+        with open(path, "r") as f:
+            shebang = f.readline(256)
+        return shebang.startswith("#!") and "python" in shebang
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _normalize_program_for_tracy(program: List[str]) -> List[str]:
+    """Normalize a program command for use under ``python -m tracy``.
+
+    Handles three invocation styles:
+      1. ``python3 script.py …``  — strip the interpreter (tracy provides its own)
+      2. ``python3 -m module …``  — strip the interpreter, keep ``-m module``
+      3. ``pytest …`` (bare entry point) — convert to ``-m pytest …``
+
+    Case 3 detects Python console_scripts entry points (installed via pip) by
+    resolving the executable on PATH and checking for a Python shebang.  The
+    entry point name is assumed to match the importable module name, which holds
+    for the vast majority of tools (pytest, coverage, mypy, black, etc.).
+    """
+    if not program:
+        return program
+
+    first = program[0]
+    name = Path(first).name
+
+    # Cases 1 & 2: explicit Python interpreter — strip it
+    if name in ("python", "python3") or name.startswith("python3."):
+        return program[1:]
+    if Path(first).resolve() == Path(sys.executable).resolve():
+        return program[1:]
+
+    # Case 3: bare command that may be a Python entry point (e.g. pytest)
+    if not first.endswith(".py"):
+        resolved = shutil.which(first)
+        if resolved and _is_python_entry_point(resolved):
+            logger.debug(
+                f"{TT_RUN_PREFIX} Detected Python entry point '{first}' (shebang), "
+                f"converting to '-m {name}' for tracy compatibility"
+            )
+            return ["-m", name] + program[1:]
+
+        # Fallback: shebang check can fail for binary entry point launchers
+        # (e.g. uv-installed tools). Check if the name is importable as a module.
+        try:
+            if importlib.util.find_spec(name) is not None:
+                logger.debug(
+                    f"{TT_RUN_PREFIX} Detected importable module '{name}', "
+                    f"converting to '-m {name}' for tracy compatibility"
+                )
+                return ["-m", name] + program[1:]
+        except (ModuleNotFoundError, ValueError) as exc:
+            # Best-effort detection: failure to probe importability is non-fatal;
+            # fall back to leaving the command unchanged.
+            logger.debug(
+                f"{TT_RUN_PREFIX} Failed to probe importability for module '{name}': {exc}; "
+                "leaving program command unchanged"
+            )
+
+    return program
+
+
+def wrap_program_with_tracy(
+    program: List[str], binding: RankBinding, tracy_config: TracyConfig
+) -> Tuple[List[str], Dict[str, str]]:
+    """Return the tracy-wrapped command and any extra env for a rank.
+
+    Only --port and -o are injected per-rank; every other tracy flag comes
+    from the user's original --tracy string via passthrough_args.
+    """
+    rank_output_dir = (tracy_config.output_root / f"rank{binding.rank}").resolve()
+    rank_output_dir.mkdir(parents=True, exist_ok=True)
+    port = tracy_config.base_port + binding.rank
+
+    tracy_cmd = [
+        sys.executable,
+        "-m",
+        "tracy",
+        "--port",
+        str(port),
+        "-o",
+        str(rank_output_dir),
+    ]
+
+    if tracy_config.passthrough_args:
+        tracy_cmd.extend(tracy_config.passthrough_args)
+
+    tracy_cmd.extend(_normalize_program_for_tracy(program))
+
+    extra_env = {
+        "TT_METAL_PROFILER_DIR": str(rank_output_dir),
+    }
+
+    return tracy_cmd, extra_env
 
 
 def print_command(cmd: List[str], prefix: str = TT_RUN_PREFIX) -> None:
@@ -1646,7 +1973,8 @@ def print_command(cmd: List[str], prefix: str = TT_RUN_PREFIX) -> None:
 
 def legacy_flow(
     ctx: click.Context,
-    rank_binding: Path,
+    rank_binding: Optional[Path],
+    rank_bindings_mapping: Optional[Path],
     dry_run: bool,
     verbose: bool,
     mpi_args: Optional[List[str]],
@@ -1659,6 +1987,7 @@ def legacy_flow(
     rankfile: Optional[Path] = None,
     rankfile_syntax: Optional[RankfileSyntax] = None,
     phase2_failure_hint: Phase2FailureHint = "legacy",
+    tracy_args: Optional[str] = None,
 ) -> None:
     """tt-run - MPI process launcher for TT-Metal and TTNN distributed applications
 
@@ -1880,14 +2209,19 @@ def legacy_flow(
         tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md
         Section 2.4: Distributed Process Launch with tt-run
     """
-    program = ctx.args
+    program = list(ctx.args)
 
-    # Log diagnostic information for path resolution debugging
+    if bool(rank_binding) == bool(rank_bindings_mapping):
+        raise click.ClickException("Specify exactly one of --rank-binding or --rank-bindings-mapping")
+
     if verbose:
         logger.info(f"{TT_RUN_PREFIX} Path Resolution Diagnostics:")
         logger.info(f"{TT_RUN_PREFIX}   Original CWD (at launch): {ORIGINAL_CWD}")
         logger.info(f"{TT_RUN_PREFIX}   Current CWD: {Path.cwd()}")
-        logger.info(f"{TT_RUN_PREFIX}   rank-binding input: {rank_binding}")
+        if rank_bindings_mapping:
+            logger.info(f"{TT_RUN_PREFIX}   rank-bindings-mapping input: {rank_bindings_mapping}")
+        else:
+            logger.info(f"{TT_RUN_PREFIX}   rank-binding input: {rank_binding}")
         logger.info(f"{TT_RUN_PREFIX}   TT_METAL_HOME env: {os.environ.get('TT_METAL_HOME', '<not set>')}")
         logger.info(f"{TT_RUN_PREFIX}   HOME env: {os.environ.get('HOME', '<not set>')}")
         logger.info(f"{TT_RUN_PREFIX}   PYTHONPATH env: {os.environ.get('PYTHONPATH', '<not set>')}")
@@ -1898,7 +2232,10 @@ def legacy_flow(
             logger.info(f"{TT_RUN_PREFIX}   SLURM_SUBMIT_DIR: {os.environ.get('SLURM_SUBMIT_DIR', '<not set>')}")
 
     try:
-        config = parse_binding_config(rank_binding, mock_cluster_rank_binding, skip_mgd_check)
+        if rank_bindings_mapping:
+            config = parse_rank_bindings_mapping(rank_bindings_mapping, mock_cluster_rank_binding)
+        else:
+            config = parse_binding_config(rank_binding, mock_cluster_rank_binding, skip_mgd_check)
     except (ValueError, ValidationError) as e:
         msg = f"Configuration error: {e}"
         # Stale Phase 1 cache guidance applies after a cache hit when MPI/apps fail — not typical for YAML parse.
@@ -2006,12 +2343,20 @@ def legacy_flow(
         logger.info(f"{TT_RUN_PREFIX} Added --oversubscribe (multiple processes per host from rankfile or --host)")
 
     # Build MPI command
+    tracy_config = None
+    if tracy_args is not None:
+        try:
+            tracy_config = parse_tracy_args(tracy_args)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+
     mpi_cmd = build_mpi_command(
         config,
         program,
         effective_mpi_args if effective_mpi_args else None,
         debug_gdbserver=debug_gdbserver,
         rankfile_syntax=effective_rankfile_syntax,
+        tracy_config=tracy_config,
     )
 
     if verbose or dry_run:
@@ -2108,6 +2453,7 @@ def new_mode_flow(
     tcp_interface: Optional[str],
     rankfile_syntax: Optional[RankfileSyntax] = None,
     force_rediscovery: bool = False,
+    tracy_args: Optional[str] = None,
 ) -> None:
     """New mode flow for ttrun using mesh graph descriptor.
 
@@ -2299,6 +2645,7 @@ def new_mode_flow(
     legacy_flow(
         ctx,
         rank_binding=rank_bindings_path,
+        rank_bindings_mapping=None,
         dry_run=dry_run,
         verbose=verbose,
         mpi_args=mpi_args,
@@ -2311,6 +2658,7 @@ def new_mode_flow(
         rankfile=rankfile_path,  # Pass generated rankfile
         rankfile_syntax=rankfile_syntax,
         phase2_failure_hint=phase2_failure_hint,
+        tracy_args=tracy_args,
     )
 
 
@@ -2325,6 +2673,17 @@ def new_mode_flow(
     type=click.Path(path_type=Path),
     required=False,
     help="Rank binding configuration file (YAML). Relative paths are resolved against the launch directory.",
+)
+@click.option(
+    "--rank-bindings-mapping",
+    type=click.Path(path_type=Path),
+    required=False,
+    default=None,
+    help=(
+        "YAML with subcontext_id_to_rank_bindings: sub-context id -> rank-binding overlay path. "
+        "Overlays are merged into global MPI ranks in ascending sub-context id order. "
+        "Each overlay may use a different mesh_graph_desc_path; tt-run sets TT_MESH_GRAPH_DESC_PATH per rank."
+    ),
 )
 @click.option(
     "--mesh-graph-descriptor",
@@ -2398,10 +2757,25 @@ def new_mode_flow(
     help="New mode only: always run Phase 1 (generate_rank_bindings) and overwrite the Phase 1 cache for "
     "this MGD/host fingerprint, even if a cache hit would otherwise skip it (e.g. after a host link failure).",
 )
+@click.option(
+    "--tracy",
+    "tracy_args",
+    type=str,
+    default=None,
+    help=(
+        "Enable Tracy profiling for every rank. "
+        "Accepts the full `python -m tracy` argument string (quoted). "
+        "--port/-t and -o/--output-folder are automatically made per-rank "
+        f"(default base port {DEFAULT_TRACY_BASE_PORT}, output $TT_METAL_HOME/generated/profiler/ttrun). "
+        "All other tracy flags are forwarded verbatim. "
+        'Examples: --tracy "-r -v --no-device" or --tracy "" for defaults.'
+    ),
+)
 @click.pass_context
 def main(
     ctx: click.Context,
     rank_binding: Optional[Path],
+    rank_bindings_mapping: Optional[Path],
     mesh_graph_descriptor: Optional[Path],
     hosts: Optional[List[str]],
     dry_run: bool,
@@ -2415,6 +2789,7 @@ def main(
     tcp_interface: Optional[str],
     rankfile_syntax: str,
     force_rediscovery: bool,
+    tracy_args: Optional[str],
 ) -> None:
     """tt-run - MPI process launcher for TT-Metal and TTNN distributed applications
 
@@ -2441,18 +2816,14 @@ def main(
         logger.add(sys.stderr, level="INFO")
 
     # Check for mutually exclusive options
-    if rank_binding is not None and mesh_graph_descriptor is not None:
+    specified = sum(x is not None for x in [rank_binding, rank_bindings_mapping, mesh_graph_descriptor])
+    if specified != 1:
         raise click.ClickException(
-            "--rank-binding and --mesh-graph-descriptor are mutually exclusive. " "Please use only one of them."
+            "Specify exactly one of --rank-binding, --rank-bindings-mapping, or --mesh-graph-descriptor."
         )
 
-    if rank_binding is None and mesh_graph_descriptor is None:
-        raise click.ClickException(
-            "Either --rank-binding (legacy mode) or --mesh-graph-descriptor (new mode) must be specified."
-        )
-
-    # Legacy mode: use --rank-binding
-    if rank_binding is not None:
+    # Legacy mode: use --rank-binding or --rank-bindings-mapping
+    if rank_binding is not None or rank_bindings_mapping is not None:
         if force_rediscovery:
             logger.warning(
                 f"{TT_RUN_PREFIX} --force-rediscovery applies only to new mode (--mesh-graph-descriptor); ignoring."
@@ -2465,17 +2836,19 @@ def main(
             )
         legacy_flow(
             ctx,
-            rank_binding,
-            dry_run,
-            verbose,
-            mpi_args,
-            debug_gdbserver,
-            mock_cluster_rank_binding,
-            skip_executable_check,
-            skip_mgd_check,
-            bare,
-            tcp_interface,
+            rank_binding=rank_binding,
+            rank_bindings_mapping=rank_bindings_mapping,
+            dry_run=dry_run,
+            verbose=verbose,
+            mpi_args=mpi_args,
+            debug_gdbserver=debug_gdbserver,
+            mock_cluster_rank_binding=mock_cluster_rank_binding,
+            skip_executable_check=skip_executable_check,
+            skip_mgd_check=skip_mgd_check,
+            bare=bare,
+            tcp_interface=tcp_interface,
             rankfile_syntax=_parse_rankfile_syntax_option(rankfile_syntax),
+            tracy_args=tracy_args,
         )
         return
 
@@ -2504,6 +2877,7 @@ def main(
             tcp_interface,
             rankfile_syntax=_parse_rankfile_syntax_option(rankfile_syntax),
             force_rediscovery=force_rediscovery,
+            tracy_args=tracy_args,
         )
         return
 

@@ -121,7 +121,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // Custom blocked sub+bcast math consumes the valids produced by unpack mock.
             for (std::uint32_t loop = 0; loop < static_cast<std::uint32_t>(LOOP_FACTOR); loop++)
             {
-                _llk_math_eltwise_binary_bcast_reuse_custom_(CT_DIM);
+                _llk_math_sub_bcast_cols_reuse_custom_(CT_DIM);
             }
         }
         else // L1_TO_L1
@@ -129,7 +129,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
             for (std::uint32_t loop = 0; loop < static_cast<std::uint32_t>(LOOP_FACTOR); loop++)
             {
                 _llk_math_wait_for_dest_available_<DstSync::SyncHalf>();
-                _llk_math_eltwise_binary_bcast_reuse_custom_(CT_DIM);
+                _llk_math_sub_bcast_cols_reuse_custom_(CT_DIM);
                 _llk_math_dest_section_done_<DstSync::SyncHalf, is_fp32_dest_acc_en>();
             }
         }
@@ -141,6 +141,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
 #ifdef LLK_TRISC_PACK
 
+#include "llk_lib_pack_wrappers.h"
 #include "llk_pack.h"
 #include "llk_pack_common.h"
 
@@ -156,7 +157,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
     {
         ZONE_SCOPED("INIT")
         _llk_pack_hw_configure_<is_fp32_dest_acc_en>(formats.pack_src, formats.pack_dst, TILE_WIDTH * TILE_HEIGHT);
-        _llk_pack_init_<false, false>(formats.pack_dst);
+        _llk_pack_init_wrapper_<false, false>(formats.pack_dst);
         _llk_pack_dest_init_<DstSync::SyncHalf, is_fp32_dest_acc_en>();
         PROFILER_SYNC();
     }
