@@ -7,6 +7,7 @@
 #include "sort_device_operation_types.hpp"
 
 #include <tt-metalium/host_api.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/work_split.hpp>
 #include "ttnn/device_operation.hpp"
 
@@ -14,36 +15,34 @@
 
 namespace ttnn::prim {
 using namespace tt::tt_metal;
+
 // Single row - single core
 struct SortProgramFactorySingleRowSingleCore {
-    struct shared_variables_t {
-        KernelHandle reader_kernel_id{};
-        KernelHandle compute_kernel_id{};
-        KernelHandle writer_kernel_id{};
-        CoreCoord storage_grid_size;
-    };
-
-    using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
-
-    static cached_program_t create(const SortParams&, const SortInputs&, std::vector<Tensor>&);
-    static void override_runtime_arguments(
-        cached_program_t&, const SortParams&, const SortInputs&, std::vector<Tensor>&);
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
+        const SortParams& attributes, const SortInputs& tensor_args, std::vector<Tensor>& output_tensors);
 };
 
 // SortProgramFactoryCrossCoreDataExchange - single row, multi core with processing multiple tiles on one core with
 // cross core data exchange
 struct SortProgramFactoryCrossCoreDataExchange {
-    struct shared_variables_t {
-        KernelHandle reader_kernel_id{};
-        KernelHandle compute_kernel_id{};
-        KernelHandle writer_kernel_id{};
-        CoreRangeSet core_range_set;
+    // Per-program op-owned tensors that must survive across cache hits.  The framework
+    // visits Tensor fields here via reflection so their buffers participate in
+    // BufferBinding patching alongside tensor_args / tensor_return_value.
+    //
+    // Wrapped in std::optional because Tensor has no default constructor and the
+    // framework default-initialises resource_t before prepare_resources populates it.
+    struct Resources {
+        std::optional<Tensor> physical_core_lookup_table_tensor;
     };
 
-    using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
-    static cached_program_t create(const SortParams&, const SortInputs&, std::vector<Tensor>&);
-    static void override_runtime_arguments(
-        cached_program_t&, const SortParams&, const SortInputs&, std::vector<Tensor>&);
+    static Resources prepare_resources(
+        const SortParams& attributes, const SortInputs& tensor_args, std::vector<Tensor>& output_tensors);
+
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
+        const SortParams& attributes,
+        const SortInputs& tensor_args,
+        std::vector<Tensor>& output_tensors,
+        Resources& resources);
 
     /**
      * @brief Strategies for slicing work across cores in cross-core data exchange sort.
@@ -66,20 +65,8 @@ struct SortProgramFactoryCrossCoreDataExchange {
 
 // Single row - multi core
 struct SortProgramFactorySingleRowMultiCore {
-    struct shared_variables_t {
-        KernelHandle coordinator_kernel_id{};
-        KernelHandle reader_kernel_id{};
-        KernelHandle compute_kernel_id{};
-        KernelHandle writer_kernel_id{};
-        CoreCoord coordinator_core;
-        CoreRangeSet worker_core_range;
-    };
-
-    using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
-
-    static cached_program_t create(const SortParams&, const SortInputs&, std::vector<Tensor>&);
-    static void override_runtime_arguments(
-        cached_program_t&, const SortParams&, const SortInputs&, std::vector<Tensor>&);
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
+        const SortParams& attributes, const SortInputs& tensor_args, std::vector<Tensor>& output_tensors);
 };
 
 }  // namespace ttnn::prim

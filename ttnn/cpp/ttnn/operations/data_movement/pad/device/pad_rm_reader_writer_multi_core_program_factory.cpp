@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "pad_rm_reader_writer_multi_core_program_factory.hpp"
+#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include "ttnn/operations/data_movement/common/common.hpp"
 
@@ -156,12 +158,11 @@ split_across_cores(CoreCoord grid_size, uint32_t nbatch, uint32_t ntiles_h, uint
 }
 }  // namespace
 
-PadRmReaderWriterMultiCoreProgramFactory::cached_program_t PadRmReaderWriterMultiCoreProgramFactory::create(
+ProgramDescriptor PadRmReaderWriterMultiCoreProgramFactory::create_descriptor(
     const PadParams& operation_attributes, const PadInputs& tensor_args, Tensor& output) {
     const auto& a = tensor_args.input;
     const auto& output_padded_shape = operation_attributes.output_padded_shape;
     const auto& pad_value = operation_attributes.pad_value;
-    Program program{};
 
     auto output_shape = output_padded_shape;
 
@@ -220,9 +221,18 @@ PadRmReaderWriterMultiCoreProgramFactory::cached_program_t PadRmReaderWriterMult
     uint32_t cb_pagesize =
         static_cast<uint32_t>(std::ceil((float)dst_nbytes_per_core_w / cb_page_alignment)) * cb_page_alignment;
     tt::DataFormat in_df = tt::tt_metal::datatype_to_dataformat_converter(a.dtype());
-    tt::tt_metal::CircularBufferConfig cb_config =
-        tt::tt_metal::CircularBufferConfig(cb_npages * cb_pagesize, {{cb_id, in_df}}).set_page_size(cb_id, cb_pagesize);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores, cb_config);
+
+    ProgramDescriptor desc;
+
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = cb_npages * cb_pagesize,
+        .core_ranges = all_cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(cb_id),
+            .data_format = in_df,
+            .page_size = cb_pagesize,
+        }}},
+    });
 
     std::vector<uint32_t> reader_ct_args = {unpadded_row_size_nbytes, padded_row_size_nbytes};
     TensorAccessorArgs(*src0_buffer).append_to(reader_ct_args);
@@ -239,16 +249,22 @@ PadRmReaderWriterMultiCoreProgramFactory::cached_program_t PadRmReaderWriterMult
         packed_pad_value = pack_two_bfloat16_into_uint32({bfloat16(0.0f), bfloat16(pad_value)});
     }
 
-    KernelHandle reader_kernel_id = CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/pad/device/kernels/dataflow/reader_pad_dims_rm_interleaved.cpp",
-        all_cores,
-        tt::tt_metal::ReaderDataMovementConfig(reader_ct_args));
-    KernelHandle writer_kernel_id = CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/data_movement/pad/device/kernels/dataflow/writer_pad_dims_rm_interleaved.cpp",
-        all_cores,
-        tt::tt_metal::WriterDataMovementConfig(writer_ct_args));
+    KernelDescriptor reader_desc;
+    reader_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/pad/device/kernels/dataflow/reader_pad_dims_rm_interleaved.cpp";
+    reader_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    reader_desc.core_ranges = all_cores;
+    reader_desc.compile_time_args = reader_ct_args;
+    reader_desc.config = ReaderConfigDescriptor{};
+
+    KernelDescriptor writer_desc;
+    writer_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/data_movement/pad/device/kernels/dataflow/writer_pad_dims_rm_interleaved.cpp";
+    writer_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    writer_desc.core_ranges = all_cores;
+    writer_desc.compile_time_args = std::move(writer_ct_args);
+    writer_desc.config = WriterConfigDescriptor{};
+
     // int32_t padded_row_diff_size_nbytes = padded_row_size_nbytes - unpadded_row_size_nbytes;
     log_rt_args(CoreCoord{0, 0}, reader_ct_args);
 
@@ -315,34 +331,43 @@ PadRmReaderWriterMultiCoreProgramFactory::cached_program_t PadRmReaderWriterMult
                     curr_stick_diff_nbytes = dst_nbytes_per_core_w - curr_stick_size_nbytes;
                     rem_src_stick_size_nbytes = 0;
                 }
-                const std::array reader_rt_args = {
-                    src0_buffer->address(),
-                    dst_buffer->address(),
-                    a.padded_shape()[0],
-                    output_shape[0],
-                    a.padded_shape()[1],
-                    output_shape[1],
-                    a.padded_shape()[2],
-                    output_shape[2],
-                    a.padded_shape()[3],
-                    output_shape[3],
-                    curr_stick_size_nbytes,
-                    (uint32_t)dst_nbytes_per_core_w,
-                    (uint32_t)curr_stick_diff_nbytes,
-                    pad_value_const_tensor_addr,
-                    pad_value_const_buffer_nbytes,
-                    packed_pad_value,
-                    start_src_stick_id,
-                    start_dst_stick_id,
-                    start_src_stick_wi,
-                    start_dst_stick_wi,
-                    start_src_stick_wi * a.element_size(),
-                    (uint32_t)local_nsticks,
-                    num_local_unpadded_nsticks,
-                    unpadded_row_size_nbytes,
-                    padded_row_size_nbytes,
-                    start_dst_stick_wi * output.element_size(),
-                    nbatch_per_core_h};
+
+                // Slot 0/1 are raw src/dst buffer base addresses (no offset).  Use
+                // Buffer* for BufferBinding so the framework patches addresses on
+                // cache hits without rebuilding the descriptor.  Slot 13
+                // (pad_value_const_tensor_addr) stays a literal uint32_t — the const
+                // tensor is recreated on each cache miss and its address is captured
+                // there.
+                KernelDescriptor::RTArgList rt_args;
+                rt_args.reserve(27);
+                rt_args.push_back(src0_buffer);
+                rt_args.push_back(dst_buffer);
+                rt_args.push_back(uint32_t{a.padded_shape()[0]});
+                rt_args.push_back(uint32_t{output_shape[0]});
+                rt_args.push_back(uint32_t{a.padded_shape()[1]});
+                rt_args.push_back(uint32_t{output_shape[1]});
+                rt_args.push_back(uint32_t{a.padded_shape()[2]});
+                rt_args.push_back(uint32_t{output_shape[2]});
+                rt_args.push_back(uint32_t{a.padded_shape()[3]});
+                rt_args.push_back(uint32_t{output_shape[3]});
+                rt_args.push_back(curr_stick_size_nbytes);
+                rt_args.push_back(static_cast<uint32_t>(dst_nbytes_per_core_w));
+                rt_args.push_back(static_cast<uint32_t>(curr_stick_diff_nbytes));
+                rt_args.push_back(static_cast<uint32_t>(pad_value_const_tensor_addr));
+                rt_args.push_back(pad_value_const_buffer_nbytes);
+                rt_args.push_back(packed_pad_value);
+                rt_args.push_back(start_src_stick_id);
+                rt_args.push_back(start_dst_stick_id);
+                rt_args.push_back(start_src_stick_wi);
+                rt_args.push_back(start_dst_stick_wi);
+                rt_args.push_back(start_src_stick_wi * a.element_size());
+                rt_args.push_back(static_cast<uint32_t>(local_nsticks));
+                rt_args.push_back(num_local_unpadded_nsticks);
+                rt_args.push_back(unpadded_row_size_nbytes);
+                rt_args.push_back(padded_row_size_nbytes);
+                rt_args.push_back(start_dst_stick_wi * output.element_size());
+                rt_args.push_back(nbatch_per_core_h);
+
                 // if (core.x == 0) log_rt_args(core, reader_rt_args);
                 // if (core.x == 0) {
                 //     log_debug(tt::LogOp, "{} :: start_src_stick_id: {}", core.y, start_src_stick_id);
@@ -352,9 +377,8 @@ PadRmReaderWriterMultiCoreProgramFactory::cached_program_t PadRmReaderWriterMult
                 //     log_debug(tt::LogOp, "{} :: nbatch_per_core_h: {}", core.y, nbatch_per_core_h);
                 //     log_debug(tt::LogOp, "{} :: ncores_per_batch_h: {}", core.y, ncores_per_batch_h);
                 // }
-                const auto& writer_rt_args = reader_rt_args;
-                tt::tt_metal::SetRuntimeArgs(program, reader_kernel_id, core, reader_rt_args);
-                tt::tt_metal::SetRuntimeArgs(program, writer_kernel_id, core, writer_rt_args);
+                reader_desc.emplace_runtime_args(core, rt_args);
+                writer_desc.emplace_runtime_args(core, rt_args);
                 start_src_stick_wi += ntiles_per_core_w * TILE_WIDTH;
                 start_dst_stick_wi += ntiles_per_core_w * TILE_WIDTH;
             }  // for ncores_w
@@ -363,34 +387,10 @@ PadRmReaderWriterMultiCoreProgramFactory::cached_program_t PadRmReaderWriterMult
         }  // for ncores_h
     }
 
-    return cached_program_t{std::move(program), {ncores_h, ncores_w, reader_kernel_id, writer_kernel_id}};
-}
+    desc.kernels.push_back(std::move(reader_desc));
+    desc.kernels.push_back(std::move(writer_desc));
 
-void PadRmReaderWriterMultiCoreProgramFactory::override_runtime_arguments(
-    cached_program_t& cached_program,
-    const PadParams& /*operation_attributes*/,
-    const PadInputs& tensor_args,
-    Tensor& output) {
-    auto* src_buffer = tensor_args.input.buffer();
-    auto* dst_buffer = output.buffer();
-
-    for (uint32_t j = 0; j < cached_program.shared_variables.ncores_h; ++j) {
-        for (uint32_t i = 0; i < cached_program.shared_variables.ncores_w; ++i) {
-            CoreCoord core = {i, j};
-            {
-                auto& runtime_args = tt::tt_metal::GetRuntimeArgs(
-                    cached_program.program, cached_program.shared_variables.reader_kernel_id, core);
-                runtime_args[0] = src_buffer->address();
-                runtime_args[1] = dst_buffer->address();
-            }
-            {
-                auto& runtime_args = tt::tt_metal::GetRuntimeArgs(
-                    cached_program.program, cached_program.shared_variables.writer_kernel_id, core);
-                runtime_args[0] = src_buffer->address();
-                runtime_args[1] = dst_buffer->address();
-            }
-        }
-    }
+    return desc;
 }
 
 }  // namespace ttnn::prim

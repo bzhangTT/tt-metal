@@ -4,15 +4,14 @@
 
 #include "untilize_with_unpadding_multi_core_block_interleaved_program_factory.hpp"
 
-#include "ttnn/operations/cb_utils.hpp"
 #include "ttnn/operations/math.hpp"
 #include "ttnn/operations/core/work_split/work_split_tilize.hpp"
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/allocator.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include "ttnn/common/constants.hpp"
-#include "ttnn/operation.hpp"
 #include "ttnn/operations/data_movement/common/common.hpp"
 
 using namespace tt::constants;
@@ -20,13 +19,44 @@ using namespace tt::tt_metal;
 
 namespace ttnn::prim {
 
-UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::cached_program_t
-UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::create(
+namespace {
+
+// Push a paired (input, output) CB block onto desc for one of the (full / cliff_*) core ranges.
+// Helper has unique-to-this-file name to avoid anonymous-namespace collisions with sibling factories.
+void push_unpadding_block_cb_pair(
+    ProgramDescriptor& desc,
+    const CoreRangeSet& cores,
+    uint32_t num_tiles,
+    uint32_t input_single_tile_size,
+    uint32_t output_single_tile_size,
+    tt::DataFormat input_cb_data_format,
+    tt::DataFormat output_cb_data_format) {
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_tiles * input_single_tile_size,
+        .core_ranges = cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(tt::CBIndex::c_0),
+            .data_format = input_cb_data_format,
+            .page_size = input_single_tile_size,
+        }}},
+    });
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_tiles * output_single_tile_size,
+        .core_ranges = cores,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(tt::CBIndex::c_16),
+            .data_format = output_cb_data_format,
+            .page_size = output_single_tile_size,
+        }}},
+    });
+}
+
+}  // namespace
+
+ProgramDescriptor UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::create_descriptor(
     const UntilizeWithUnpaddingParams& operation_attributes, const Tensor& input, Tensor& output) {
     const auto& a = input;
     bool fp32_dest_acc_en = operation_attributes.fp32_dest_acc_en;
-
-    Program program{};
 
     tt::DataFormat input_cb_data_format = datatype_to_dataformat_converter(a.dtype());
     uint32_t input_single_tile_size = tt::tile_size(input_cb_data_format);
@@ -89,76 +119,55 @@ UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::create(
         el_size = a.element_size();
     }
 
-    if (!core_range.empty()) {
-        create_cb(
-            tt::CBIndex::c_0, program, core_range, input_single_tile_size, single_sub_block_size, input_cb_data_format);
+    Buffer* src0_buffer = a.buffer();
+    Buffer* dst_buffer = output.buffer();
+    TT_FATAL(dst_buffer != nullptr, "Output buffer should be allocated on device!");
 
-        create_cb(
-            tt::CBIndex::c_16,
-            program,
+    ProgramDescriptor desc;
+
+    if (!core_range.empty()) {
+        push_unpadding_block_cb_pair(
+            desc,
             core_range,
-            output_single_tile_size,
             single_sub_block_size,
+            input_single_tile_size,
+            output_single_tile_size,
+            input_cb_data_format,
             output_cb_data_format);
     }
 
     if (has_cliff_col && has_cliff_row) {
-        create_cb(
-            tt::CBIndex::c_0,
-            program,
+        push_unpadding_block_cb_pair(
+            desc,
             cliff_col_row_core_range,
+            single_block_size_cliff_row,
             input_single_tile_size,
-            single_block_size_cliff_row,
-            input_cb_data_format);
-
-        create_cb(
-            tt::CBIndex::c_16,
-            program,
-            cliff_col_row_core_range,
             output_single_tile_size,
-            single_block_size_cliff_row,
+            input_cb_data_format,
             output_cb_data_format);
     }
 
     if (has_cliff_row) {
-        create_cb(
-            tt::CBIndex::c_0,
-            program,
+        push_unpadding_block_cb_pair(
+            desc,
             cliff_row_core_range,
+            single_block_size_cliff_row,
             input_single_tile_size,
-            single_block_size_cliff_row,
-            input_cb_data_format);
-
-        create_cb(
-            tt::CBIndex::c_16,
-            program,
-            cliff_row_core_range,
             output_single_tile_size,
-            single_block_size_cliff_row,
+            input_cb_data_format,
             output_cb_data_format);
     }
 
     if (has_cliff_col) {
-        create_cb(
-            tt::CBIndex::c_0,
-            program,
+        push_unpadding_block_cb_pair(
+            desc,
             cliff_col_core_range,
+            single_sub_block_size,
             input_single_tile_size,
-            single_sub_block_size,
-            input_cb_data_format);
-
-        create_cb(
-            tt::CBIndex::c_16,
-            program,
-            cliff_col_core_range,
             output_single_tile_size,
-            single_sub_block_size,
+            input_cb_data_format,
             output_cb_data_format);
     }
-
-    Buffer* src0_buffer = a.buffer();
-    Buffer* dst_buffer = output.buffer();
-    TT_FATAL(dst_buffer != nullptr, "Output buffer should be allocated on device!");
 
     // reader
 
@@ -174,80 +183,104 @@ UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::create(
 
     std::vector<uint32_t> reader_compile_time_args = {num_tiles_2d, third_dim, total_tiles_per_row};
     TensorAccessorArgs(*src0_buffer).append_to(reader_compile_time_args);
-    KernelHandle unary_reader_kernel_id = CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/eltwise/unary/device/kernels/dataflow/reader_unary_interleaved_wh_multicore.cpp",
-        all_cores,
-        ReaderDataMovementConfig(reader_compile_time_args));
+
+    KernelDescriptor reader_desc;
+    reader_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/eltwise/unary/device/kernels/dataflow/reader_unary_interleaved_wh_multicore.cpp";
+    reader_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    reader_desc.core_ranges = all_cores;
+    reader_desc.compile_time_args = std::move(reader_compile_time_args);
+    reader_desc.config = ReaderConfigDescriptor{};
 
     // writer
     uint32_t total_num_rows = output.logical_shape()[-2];
     std::vector<uint32_t> writer_ct_args = {total_num_rows, third_dim, TILE_HEIGHT, unpadded_row_size_bytes};
     TensorAccessorArgs(*dst_buffer).append_to(writer_ct_args);
-    KernelHandle unary_writer_kernel_id = CreateKernel(
-        program,
+
+    KernelDescriptor writer_desc;
+    writer_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/data_movement/untilize_with_unpadding/device/kernels/dataflow/"
-        "writer_unary_stick_layout_wh_multicore.cpp",
-        all_cores,
-        WriterDataMovementConfig(writer_ct_args));
+        "writer_unary_stick_layout_wh_multicore.cpp";
+    writer_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    writer_desc.core_ranges = all_cores;
+    writer_desc.compile_time_args = std::move(writer_ct_args);
+    writer_desc.config = WriterConfigDescriptor{};
 
     // compute
     uint32_t single_sub_block_size_wh = single_block_size * single_block_size / single_sub_block_size;
     uint32_t single_sub_block_size_cliff_col_wh =
         single_block_size_cliff_col * single_block_size / single_sub_block_size;
-    std::map<std::string, std::string> compute_kernel_defines;
+    std::vector<std::pair<std::string, std::string>> compute_kernel_defines;
     if (input_cb_data_format == tt::DataFormat::Int32 || input_cb_data_format == tt::DataFormat::UInt32 ||
         input_cb_data_format == tt::DataFormat::Float32) {
-        compute_kernel_defines["DST_ACCUM_MODE"] = "1";
+        compute_kernel_defines.emplace_back("DST_ACCUM_MODE", "1");
     }
-    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
     if (fp32_dest_acc_en) {
-        unpack_to_dest_mode[tt::CBIndex::c_0] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
-    }
-    if (!core_range.empty()) {
-        CreateKernel(
-            program,
-            "ttnn/cpp/ttnn/operations/data_movement/untilize/device/kernels/compute/untilize_wh.cpp",
-            core_range,
-            ComputeConfig{
-                .fp32_dest_acc_en = fp32_dest_acc_en,
-                .unpack_to_dest_mode = unpack_to_dest_mode,
-                .compile_args = {single_sub_block_size_wh, single_sub_block_size, third_dim},
-                .defines = compute_kernel_defines});
-    }
-    if (has_cliff_col && has_cliff_row) {
-        CreateKernel(
-            program,
-            "ttnn/cpp/ttnn/operations/data_movement/untilize/device/kernels/compute/untilize_wh.cpp",
-            cliff_col_row_core_range,
-            ComputeConfig{
-                .fp32_dest_acc_en = fp32_dest_acc_en,
-                .unpack_to_dest_mode = unpack_to_dest_mode,
-                .compile_args = {single_block_size_cliff_col, single_block_size_cliff_row, third_dim},
-                .defines = compute_kernel_defines});
-    }
-    if (has_cliff_row) {
-        CreateKernel(
-            program,
-            "ttnn/cpp/ttnn/operations/data_movement/untilize/device/kernels/compute/untilize_wh.cpp",
-            cliff_row_core_range,
-            ComputeConfig{
-                .fp32_dest_acc_en = fp32_dest_acc_en,
-                .unpack_to_dest_mode = unpack_to_dest_mode,
-                .compile_args = {single_block_size, single_block_size_cliff_row, third_dim},
-                .defines = compute_kernel_defines});
+        unpack_to_dest_mode[tt::CBIndex::c_0] = UnpackToDestMode::UnpackToDestFp32;
     }
 
+    const std::string compute_kernel(
+        "ttnn/cpp/ttnn/operations/data_movement/untilize/device/kernels/compute/untilize_wh.cpp");
+
+    std::optional<KernelDescriptor> compute_desc;
+    if (!core_range.empty()) {
+        KernelDescriptor cd;
+        cd.kernel_source = compute_kernel;
+        cd.source_type = KernelDescriptor::SourceType::FILE_PATH;
+        cd.core_ranges = core_range;
+        cd.compile_time_args = {single_sub_block_size_wh, single_sub_block_size, third_dim};
+        cd.defines = compute_kernel_defines;
+        cd.config = ComputeConfigDescriptor{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+        };
+        compute_desc = std::move(cd);
+    }
+
+    std::optional<KernelDescriptor> compute_cliff_col_row_desc;
+    if (has_cliff_col && has_cliff_row) {
+        KernelDescriptor cd;
+        cd.kernel_source = compute_kernel;
+        cd.source_type = KernelDescriptor::SourceType::FILE_PATH;
+        cd.core_ranges = cliff_col_row_core_range;
+        cd.compile_time_args = {single_block_size_cliff_col, single_block_size_cliff_row, third_dim};
+        cd.defines = compute_kernel_defines;
+        cd.config = ComputeConfigDescriptor{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+        };
+        compute_cliff_col_row_desc = std::move(cd);
+    }
+
+    std::optional<KernelDescriptor> compute_cliff_row_desc;
+    if (has_cliff_row) {
+        KernelDescriptor cd;
+        cd.kernel_source = compute_kernel;
+        cd.source_type = KernelDescriptor::SourceType::FILE_PATH;
+        cd.core_ranges = cliff_row_core_range;
+        cd.compile_time_args = {single_block_size, single_block_size_cliff_row, third_dim};
+        cd.defines = compute_kernel_defines;
+        cd.config = ComputeConfigDescriptor{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+        };
+        compute_cliff_row_desc = std::move(cd);
+    }
+
+    std::optional<KernelDescriptor> compute_cliff_col_desc;
     if (has_cliff_col) {
-        CreateKernel(
-            program,
-            "ttnn/cpp/ttnn/operations/data_movement/untilize/device/kernels/compute/untilize_wh.cpp",
-            cliff_col_core_range,
-            ComputeConfig{
-                .fp32_dest_acc_en = fp32_dest_acc_en,
-                .unpack_to_dest_mode = unpack_to_dest_mode,
-                .compile_args = {single_sub_block_size_cliff_col_wh, single_sub_block_size, third_dim},
-                .defines = compute_kernel_defines});
+        KernelDescriptor cd;
+        cd.kernel_source = compute_kernel;
+        cd.source_type = KernelDescriptor::SourceType::FILE_PATH;
+        cd.core_ranges = cliff_col_core_range;
+        cd.compile_time_args = {single_sub_block_size_cliff_col_wh, single_sub_block_size, third_dim};
+        cd.defines = std::move(compute_kernel_defines);
+        cd.config = ComputeConfigDescriptor{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = std::move(unpack_to_dest_mode),
+        };
+        compute_cliff_col_desc = std::move(cd);
     }
 
     // RUNTIME ARGS
@@ -289,22 +322,22 @@ UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::create(
             single_sub_block_size_row_arg = single_sub_block_size;
         }
 
-        //  writer runtime args
-        std::vector<uint32_t> writer_rt_args = {
-            dst_buffer->address(),
-            TILE_WIDTH * el_size * single_block_size_row_arg,
-            start_row_id,
-            start_column_id,
-            single_block_size_row_arg,
-            single_block_size_col_arg,
-            TILE_WIDTH * el_size * single_sub_block_size_row_arg,
-            single_sub_block_size_row_arg};
+        // writer runtime args — Buffer* slot auto-registers as a BufferBinding so the
+        // framework patches addresses on cache hits.
+        writer_desc.emplace_runtime_args(
+            core,
+            {dst_buffer,
+             static_cast<uint32_t>(TILE_WIDTH * el_size * single_block_size_row_arg),
+             start_row_id,
+             start_column_id,
+             single_block_size_row_arg,
+             single_block_size_col_arg,
+             static_cast<uint32_t>(TILE_WIDTH * el_size * single_sub_block_size_row_arg),
+             single_sub_block_size_row_arg});
 
-        // reader runtime args
-        const std::array reader_rt_args = {
-            src0_buffer->address(), tile_start_id, single_block_size_row_arg, single_block_size_col_arg};
-        SetRuntimeArgs(program, unary_reader_kernel_id, core, reader_rt_args);
-        SetRuntimeArgs(program, unary_writer_kernel_id, core, writer_rt_args);
+        // reader runtime args — Buffer* slot auto-registers as a BufferBinding.
+        reader_desc.emplace_runtime_args(
+            core, {src0_buffer, tile_start_id, single_block_size_row_arg, single_block_size_col_arg});
 
         uint32_t end_column_id = start_column_id + (single_block_size_row_arg * TILE_WIDTH * el_size);
         start_column_id = end_column_id % padded_row_size_bytes;
@@ -320,41 +353,22 @@ UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::create(
         }
     }
 
-    return cached_program_t{
-        std::move(program),
-        shared_variables_t{
-            .reader_kernel_id = unary_reader_kernel_id,
-            .writer_kernel_id = unary_writer_kernel_id,
-            .cores = cores,
-            .ncores = ncores}};
-}
-
-void UntilizeWithUnpaddingMultiCoreBlockInterleavedProgramFactory::override_runtime_arguments(
-    cached_program_t& cached_program,
-    const UntilizeWithUnpaddingParams& /*operation_attributes*/,
-    const Tensor& input,
-    const Tensor& output) {
-    auto& program = cached_program.program;
-    auto& shared_vars = cached_program.shared_variables;
-    auto* src_buffer = input.buffer();
-    auto* dst_buffer = output.buffer();
-
-    const auto& ncores = shared_vars.ncores;
-    const auto& cores = shared_vars.cores;
-    auto& reader_runtime_args_by_core = GetRuntimeArgs(program, shared_vars.reader_kernel_id);
-    auto& writer_runtime_args_by_core = GetRuntimeArgs(program, shared_vars.writer_kernel_id);
-
-    for (uint32_t i = 0; i < ncores; ++i) {
-        const auto& core = cores[i];
-        {
-            auto& runtime_args = reader_runtime_args_by_core[core.x][core.y];
-            runtime_args[0] = src_buffer->address();
-        }
-        {
-            auto& runtime_args = writer_runtime_args_by_core[core.x][core.y];
-            runtime_args[0] = dst_buffer->address();
-        }
+    desc.kernels.push_back(std::move(reader_desc));
+    desc.kernels.push_back(std::move(writer_desc));
+    if (compute_desc.has_value()) {
+        desc.kernels.push_back(std::move(*compute_desc));
     }
+    if (compute_cliff_col_row_desc.has_value()) {
+        desc.kernels.push_back(std::move(*compute_cliff_col_row_desc));
+    }
+    if (compute_cliff_row_desc.has_value()) {
+        desc.kernels.push_back(std::move(*compute_cliff_row_desc));
+    }
+    if (compute_cliff_col_desc.has_value()) {
+        desc.kernels.push_back(std::move(*compute_cliff_col_desc));
+    }
+
+    return desc;
 }
 
 }  // namespace ttnn::prim

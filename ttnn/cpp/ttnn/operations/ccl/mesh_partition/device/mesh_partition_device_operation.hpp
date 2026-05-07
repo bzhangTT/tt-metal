@@ -42,17 +42,11 @@ struct MeshPartitionDeviceOperation {
             const std::vector<std::optional<const tt::tt_metal::Tensor>>&,
             const std::vector<tt::tt_metal::Tensor>&)>;
 
-        // -- shared variables --------------------------------------------
-        using SliceSharedVariables = std::variant<
-            prim::SliceRmProgramFactory::shared_variables_t,
-            prim::SliceRmShardedProgramFactory::shared_variables_t,
-            prim::SliceRmStrideProgramFactory::shared_variables_t,
-            prim::SliceTileProgramFactory::shared_variables_t,
-            prim::SliceTileTensorArgsProgramFactory::shared_variables_t>;
-
+        // The slice family migrated to the descriptor framework, so we no longer carry per-factory
+        // shared_variables_t. We retain the program_factory variant so override_runtime_arguments can
+        // re-dispatch to the right create_descriptor() on cache hits.
         struct shared_variables_t {
             prim::SliceDeviceOperation::program_factory_t slice_program_factory;
-            SliceSharedVariables slice_shared_variables;
         };
         using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
 
