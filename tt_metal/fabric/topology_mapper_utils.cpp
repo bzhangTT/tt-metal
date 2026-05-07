@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <tuple>
@@ -282,6 +283,54 @@ get_requested_intermesh_from_mgd(const ::tt::tt_fabric::MeshGraphDescriptor& mgd
     return {requested_intermesh_connections, requested_intermesh_ports};
 }
 
+// Mesh-level FABRIC edges (same extraction as get_requested_intermesh_from_mgd) restricted to instances sharing
+// one mesh descriptor name. Nodes are MeshId(instance.local_id) for those instances only.
+AdjacencyGraph<MeshId> build_mgd_mesh_level_subgraph_for_mesh_descriptor_name(
+    const ::tt::tt_fabric::MeshGraphDescriptor& mgd,
+    const std::string& mesh_descriptor_name,
+    const ::tt::tt_fabric::RequestedIntermeshConnections& intermesh_mesh_level_edges) {
+    using namespace ::tt::tt_fabric;
+
+    std::unordered_set<uint32_t> mesh_id_in_descriptor;
+    for (GlobalNodeId global_id : mgd.instances_by_name(mesh_descriptor_name)) {
+        const auto& inst = mgd.get_instance(global_id);
+        if (inst.kind != NodeKind::Mesh) {
+            continue;
+        }
+        mesh_id_in_descriptor.insert(inst.local_id);
+    }
+
+    AdjacencyGraph<MeshId>::AdjacencyMap adj;
+    for (uint32_t mid : mesh_id_in_descriptor) {
+        adj[MeshId(mid)] = {};
+    }
+
+    std::set<std::pair<uint32_t, uint32_t>> undirected_seen;
+    for (const auto& [src_u32, dst_map] : intermesh_mesh_level_edges) {
+        if (!mesh_id_in_descriptor.contains(src_u32)) {
+            continue;
+        }
+        for (const auto& [dst_u32, edge_count] : dst_map) {
+            (void)edge_count;
+            if (!mesh_id_in_descriptor.contains(dst_u32)) {
+                continue;
+            }
+            if (src_u32 == dst_u32) {
+                continue;
+            }
+            const auto ends = std::minmax(src_u32, dst_u32);
+            if (!undirected_seen.insert(ends).second) {
+                continue;
+            }
+            MeshId src(src_u32);
+            MeshId dst(dst_u32);
+            adj[src].push_back(dst);
+            adj[dst].push_back(src);
+        }
+    }
+    return AdjacencyGraph<MeshId>(adj);
+}
+
 LogicalMultiMeshGraph build_logical_multi_mesh_adjacency_graph_impl(
     const std::map<MeshId, ::tt::tt_fabric::AdjacencyGraph<FabricNodeId>>& mesh_adjacency_graphs,
     const ::tt::tt_fabric::RequestedIntermeshConnections& requested_intermesh_connections,
@@ -501,7 +550,7 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
     std::vector<std::unordered_set<tt::tt_metal::AsicID>> groupings_by_index;
     std::unordered_map<std::string, std::unordered_set<GroupKey>> mesh_type_to_index;
     std::unordered_map<std::string, std::size_t> mesh_type_num_instances;
-    std::unordered_map<std::string, PhysicalMultiMeshGraph> mesh_type_to_graph;
+    std::unordered_map<std::string, PhysicalMultiMeshGraph> mesh_type_to_physical_graph;
 
     // Break each mesh down to a physical multi-mesh graph
     for (const auto& [mesh_name, groupings] : valid_groupings_map.at("MESH")) {
@@ -520,12 +569,46 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
         }
 
         // Build a physical multi-mesh graph for this mesh
-        mesh_type_to_graph[mesh_name] = build_hierarchical_from_flat_graph(flat_graph, placed_groupings);
+        mesh_type_to_physical_graph[mesh_name] = build_hierarchical_from_flat_graph(flat_graph, placed_groupings);
     }
 
-    // TODO: Find that section of the adjacency graph corresponding to that mesh
+    // For each mesh shape that's in the MGD
+    const auto [mgd_intermesh_mesh_level, _] = get_requested_intermesh_from_mgd(mesh_graph_descriptor);
+    std::unordered_map<std::string, AdjacencyGraph<MeshId>> mesh_to_logical_graph;
+    for (const auto& mesh_name : mesh_graph_descriptor.get_all_mesh_names()) {
+        // Build the mesh-level subgraph for this mesh
+        mesh_to_logical_graph[mesh_name] = build_mgd_mesh_level_subgraph_for_mesh_descriptor_name(
+            mesh_graph_descriptor, mesh_name, mgd_intermesh_mesh_level);
+        log_info(
+            tt::LogFabric,
+            "MGD mesh-level FABRIC subgraph for descriptor '{}': {} MeshId nodes",
+            mesh_name,
+            mesh_to_logical_graph[mesh_name].get_nodes().size());
 
-    // TODO: Do mappings on each of them and solve all solutions for that mesh
+        const auto physical_it = mesh_type_to_physical_graph.find(mesh_name);
+        if (physical_it == mesh_type_to_physical_graph.end()) {
+            log_warning(
+                tt::LogFabric,
+                "No PSD-derived PhysicalMultiMeshGraph for mesh descriptor '{}'; skipping mesh-level topology solve",
+                mesh_name);
+            continue;
+        }
+        const AdjacencyGraph<MeshId>& physical_mesh_level = physical_it->second.mesh_level_graph_;
+
+        // print the logical and physical mesh-level graphs
+        mesh_to_logical_graph[mesh_name].print_adjacency_map("Logical Mesh-Level Graph");
+        physical_mesh_level.print_adjacency_map("Physical Mesh-Level Graph");
+
+        MappingConstraints<MeshId, MeshId> mesh_level_constraints;
+        const auto mesh_level_solutions = solve_topology_mapping_n(
+            mesh_to_logical_graph[mesh_name],
+            physical_mesh_level,
+            mesh_level_constraints,
+            10,
+            ConnectionValidationMode::STRICT,
+            true,
+            TopologyMappingSolverEngine::Sat);
+    }
 
     // TODO: Find all non-intersecting solutions for each mesh together in one host
 
