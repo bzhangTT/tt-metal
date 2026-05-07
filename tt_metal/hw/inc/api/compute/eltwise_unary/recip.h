@@ -40,5 +40,15 @@ ALWI void recip_tile(uint32_t idst, int vector_mode = (int)VectorMode::RC) {
     MATH(SFPU_FOUR_PARAM_KERNEL_FP32_FIRST_FN(
         calculate_reciprocal, APPROX, DST_ACCUM_MODE, 8, legacy_compat, idst, vector_mode));
 }
+
+template <bool legacy_compat = true>
+ALWI void recip_tile(uint32_t idst_in, uint32_t idst_out, int vector_mode) {
+    MATH((_llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::calculate_reciprocal<APPROX, DST_ACCUM_MODE, 8, legacy_compat>,
+        idst_in,
+        idst_out,
+        vector_mode)));
+}
+
 #endif
 }  // namespace ckernel

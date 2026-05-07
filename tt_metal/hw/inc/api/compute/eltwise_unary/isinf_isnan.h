@@ -29,6 +29,14 @@ ALWI void isinf_tile(uint32_t idst) {
     MATH(SFPU_UNARY_NO_PARAM_KERNEL_WITH_TYPE_AND_ITERATIONS(_calculate_sfpu_isinf_isnan_, isinf, RC, APPROX, idst, 8));
 }
 
+ALWI void isinf_tile(uint32_t idst_in, uint32_t idst_out) {
+    MATH((_llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::_calculate_sfpu_isinf_isnan_<SfpuType::isinf, APPROX, 8>,
+        idst_in,
+        idst_out,
+        (int)VectorMode::RC)));
+}
+
 /**
  * Please refer to documentation for any_init.
  */
@@ -50,6 +58,14 @@ ALWI void isinf_tile_init() { MATH(SFPU_UNARY_KERNEL_INIT(isinf, APPROX)); }
 // clang-format on
 ALWI void isposinf_tile(uint32_t idst) {
     MATH(SFPU_UNARY_NO_PARAM_KERNEL_WITH_TYPE_AND_ITERATIONS(_calculate_sfpu_isinf_isnan_, isposinf, RC, APPROX, idst, 8));
+}
+
+ALWI void isposinf_tile(uint32_t idst_in, uint32_t idst_out) {
+    MATH((_llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::_calculate_sfpu_isinf_isnan_<SfpuType::isposinf, APPROX, 8>,
+        idst_in,
+        idst_out,
+        (int)VectorMode::RC)));
 }
 
 /**
@@ -75,6 +91,14 @@ ALWI void isneginf_tile(uint32_t idst) {
     MATH(SFPU_UNARY_NO_PARAM_KERNEL_WITH_TYPE_AND_ITERATIONS(_calculate_sfpu_isinf_isnan_, isneginf, RC, APPROX, idst, 8));
 }
 
+ALWI void isneginf_tile(uint32_t idst_in, uint32_t idst_out) {
+    MATH((_llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::_calculate_sfpu_isinf_isnan_<SfpuType::isneginf, APPROX, 8>,
+        idst_in,
+        idst_out,
+        (int)VectorMode::RC)));
+}
+
 /**
  * Please refer to documentation for any_init.
  */
@@ -98,6 +122,14 @@ ALWI void isnan_tile(uint32_t idst) {
     MATH(SFPU_UNARY_NO_PARAM_KERNEL_WITH_TYPE_AND_ITERATIONS(_calculate_sfpu_isinf_isnan_, isnan, RC, APPROX, idst, 8));
 }
 
+ALWI void isnan_tile(uint32_t idst_in, uint32_t idst_out) {
+    MATH((_llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::_calculate_sfpu_isinf_isnan_<SfpuType::isnan, APPROX, 8>,
+        idst_in,
+        idst_out,
+        (int)VectorMode::RC)));
+}
+
 /**
  * Please refer to documentation for any_init.
  */
@@ -119,6 +151,14 @@ ALWI void isnan_tile_init() { MATH(SFPU_UNARY_KERNEL_INIT(isnan, APPROX)); }
 // clang-format on
 ALWI void isfinite_tile(uint32_t idst) {
     MATH(SFPU_UNARY_NO_PARAM_KERNEL_WITH_TYPE_AND_ITERATIONS(_calculate_sfpu_isinf_isnan_, isfinite, RC, APPROX, idst, 8));
+}
+
+ALWI void isfinite_tile(uint32_t idst_in, uint32_t idst_out) {
+    MATH((_llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::_calculate_sfpu_isinf_isnan_<SfpuType::isfinite, APPROX, 8>,
+        idst_in,
+        idst_out,
+        (int)VectorMode::RC)));
 }
 
 /**
