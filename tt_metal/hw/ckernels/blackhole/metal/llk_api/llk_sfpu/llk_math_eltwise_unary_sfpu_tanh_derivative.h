@@ -21,4 +21,11 @@ inline void llk_math_eltwise_unary_sfpu_tanh_derivative(uint dst_index, int vect
         ckernel::sfpu::calculate_tanh_derivative<APPROXIMATE>, dst_index, dst_index, vector_mode);
 }
 
+template <bool APPROXIMATE>
+inline void llk_math_eltwise_unary_sfpu_tanh_derivative(
+    uint dst_index_in, uint dst_index_out, int vector_mode = (int)VectorMode::RC) {
+    _llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::calculate_tanh_derivative<APPROXIMATE>, dst_index_in, dst_index_out, vector_mode);
+}
+
 }  // namespace ckernel
