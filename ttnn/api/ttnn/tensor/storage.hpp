@@ -79,9 +79,11 @@ struct DeviceStorage {
 
     // Creates a copy of the DeviceStorage that shares the underlying device memory
     DeviceStorage(const DeviceStorage&) = default;
-    DeviceStorage(DeviceStorage&&) noexcept = default;
     DeviceStorage& operator=(const DeviceStorage&) = default;
-    DeviceStorage& operator=(DeviceStorage&&) noexcept = default;
+
+    // A moved from DeviceStorage is equivalent to a default constructed DeviceStorage (deallocated).
+    DeviceStorage(DeviceStorage&&) noexcept;
+    DeviceStorage& operator=(DeviceStorage&&) noexcept;
 
     // Creates a copy of the DeviceStorage that shares the underlying device memory,
     // but with a different set of coords.
