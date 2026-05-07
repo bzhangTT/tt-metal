@@ -24,35 +24,34 @@ template <bool transpose_of_faces, bool is_32bit>
 inline void transpose_dest_configure_mop();
 
 // Function to transpose a full tile at destination index 0, relative to current bank.
-// This function uses format switcing to achieve transposition of full 32 bit datums.
+// This function uses format switching to achieve transposition of full-32 bit datums.
 // Low bits are transposed and cached and written after high bits to avoid clobbering.
 // If template argument is_fp32_dest_acc_en is true, upon exit ALU_ACC_CTRL_Fp32_enabled_RMW
 // will be set to true.
 // Template argument transpose_of_faces will determine if the arrangement of faces will be
-// subject to tranposition also, not just the elements within the faces.
+// subject to transposition also, not just the elements within the faces.
 template <bool is_fp32_dest_acc_en, bool transpose_of_faces>
 inline void transpose_dest_32b()
 {
     // Disable implied SrcA format inference so manual SrcA format switches take effect.
-    // On Blackhole the ALU format is normally inferred; we must disable this for
-    // the SrcA format switching approach to control MOVD2B/MOVB2D behavior.
-    TTI_RMWCIB0(ALU_FORMAT_SPEC_REG_SrcA_override_MASK, ALU_FORMAT_SPEC_REG_SrcA_override_MASK, ALU_FORMAT_SPEC_REG_SrcA_override_ADDR32);
+    // We must disable this for the SrcA format switching approach to control MOVD2B/MOVB2D behavior.
+    cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_override_RMW>(1);
 
     // Disable zero flag to prevent mantissa flushing when exponent bits are 0.
     cfg_reg_rmw_tensix<ALU_ACC_CTRL_Zero_Flag_disabled_src_RMW>(1);
 
-    // Enable Fp32 for 32-bit Dst access (UseDst32b=true in MOVD2B/MOVB2D).
-    cfg_reg_rmw_tensix<ALU_ACC_CTRL_Fp32_enabled_RMW>(1);
-
     // Transpose all the low 16 bit elements of all faces and put them in SrcA.
     // Eventually Dest=0, SrcA=0.
-    cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Float16_b));
+    cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Float16_b));
     ckernel_template::run();
+
+    // Enable Fp32 for 32-bit Dst access (UseDst32b=true in MOVD2B/MOVB2D).
+    cfg_reg_rmw_tensix<ALU_ACC_CTRL_Fp32_enabled_RMW>(1);
 
     if constexpr (!transpose_of_faces)
     {
         // Transpose Face 0 hi bits and put back in Dest register.
-        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Tf32));
+        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Tf32));
         lltt::replay(ckernel::math::replay_buf_offset + 8, 8);
         TTI_MOVB2D(0, 28, ADDR_MOD_0, p_movb2d::MOV_4_ROWS, 12); // Dest=16, SrcA=0
 
@@ -70,7 +69,7 @@ inline void transpose_dest_32b()
 
         // Since all high bits have been written. We can set the appropriate formats and
         // write all the transposed low bits to Dest register.
-        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Float32));
+        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Float32));
 
         TTI_MOVA2D(1, 0, ADDR_MOD_1, p_mova2d::MOV_8_ROWS, 0);
         TTI_MOVA2D(1, 8, ADDR_MOD_1, p_mova2d::MOV_8_ROWS, 8);
@@ -84,11 +83,11 @@ inline void transpose_dest_32b()
     else
     {
         // Transpose Face 0 hi bits and put back in Dest register.
-        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Tf32));
+        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Tf32));
         lltt::replay(ckernel::math::replay_buf_offset + 8, 8);
         TTI_MOVB2D(0, 28, ADDR_MOD_1, p_movb2d::MOV_4_ROWS, 12); // Dest=0, SrcA=0
 
-        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Float32));
+        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Float32));
 
         // Write transposed Face 0 low bits to Dest, to make room for Face 1 high bits
         TTI_MOVA2D(1, 0, ADDR_MOD_1, p_mova2d::MOV_8_ROWS, 0);
@@ -97,7 +96,7 @@ inline void transpose_dest_32b()
         cfg_reg_rmw_tensix<ALU_ACC_CTRL_Fp32_enabled_RMW>(1);
 
         // Transpose Face 1 hi bits and move to SrcA
-        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Tf32));
+        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Tf32));
         lltt::replay(ckernel::math::replay_buf_offset + 8, 5);
         lltt::replay(ckernel::math::replay_buf_offset + 5, 3);
         TTI_MOVB2A(12, ADDR_MOD_0, p_movb2a::MOV_4_ROWS, 28); // Dest=32, SrcA=0
@@ -119,7 +118,7 @@ inline void transpose_dest_32b()
 
         // Since all high bits have been written. We can set the appropriate formats and
         // write all the low bits to Dest register.
-        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG0_SrcA_RMW>(to_underlying(DataFormat::Float32));
+        cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_val_RMW>(to_underlying(DataFormat::Float32));
 
         // Write transposed Face 1 low bits to Face 2's area in Dest
         TTI_MOVA2D(1, 16, ADDR_MOD_1, p_mova2d::MOV_8_ROWS, 32);
@@ -135,7 +134,7 @@ inline void transpose_dest_32b()
     }
 
     // Restore config state
-    TTI_RMWCIB0(ALU_FORMAT_SPEC_REG_SrcA_override_MASK, 0, ALU_FORMAT_SPEC_REG_SrcA_override_ADDR32);
+    cfg_reg_rmw_tensix<ALU_FORMAT_SPEC_REG_SrcA_override_RMW>(0);
     if constexpr (!is_fp32_dest_acc_en)
     {
         cfg_reg_rmw_tensix<ALU_ACC_CTRL_Fp32_enabled_RMW>(0);
