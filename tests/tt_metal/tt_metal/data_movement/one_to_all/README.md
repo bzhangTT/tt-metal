@@ -72,7 +72,5 @@ The semaphore-based tests use additional kernels for sender-receiver synchroniza
 - `sender_multicast_sem.cpp`: Implements the multicast sender with semaphore synchronization using `noc_semaphore_set_multicast` and `noc_semaphore_wait`
 Both API versions run the same test cases but use different underlying implementations. The device 2.0 tests serve as a validation and performance comparison for the new experimental API.
 
-## Quasar Tests
-These tests run on the Quasar architecture via `QuasarMeshDeviceSingleCardFixture` and require the Quasar simulator.
-
-1. **TensixDataMovementOneToAllUnicastDirectedIdeal** (Test ID: 926) - Quasar variant of One to All Unicast Directed Ideal.
+## Quasar Notes
+`TensixDataMovementOneToAllUnicastDirectedIdeal` includes a Quasar-specific code path inside `GenericMeshDeviceFixture`. Requires `TT_METAL_SLOW_DISPATCH_MODE=1`, the Quasar simulator, and a grid with at least 2 columns (e.g. `emu-quasar-2x3`).

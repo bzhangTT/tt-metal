@@ -58,7 +58,5 @@ This test suite now includes tests using the new device 2.0 experimental NOC API
 - `writer_unary_2_0.cpp`: Implements the writer functionality using the experimental NOC API
 - `reader_unary_2_0.cpp`: Implements the reader functionality using the experimental NOC API
 
-## Quasar Tests
-These tests run on the Quasar architecture via `QuasarMeshDeviceSingleCardFixture` and require the Quasar simulator.
-
-1. **TensixDataMovementDRAMDirectedIdeal** (Test ID: 925) - Quasar variant of DRAM Unary Directed Ideal.
+## Quasar Notes
+`TensixDataMovementDRAMDirectedIdeal` includes a Quasar-specific code path inside `GenericMeshDeviceFixture`. Requires `TT_METAL_SLOW_DISPATCH_MODE=1` and the Quasar simulator.
