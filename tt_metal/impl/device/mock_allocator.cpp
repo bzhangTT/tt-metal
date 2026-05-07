@@ -7,14 +7,10 @@
 #include <tt_stl/assert.hpp>
 
 #include "impl/allocator/l1_banking_allocator.hpp"
-
-#include <unordered_set>
+#include "impl/context/metal_context.hpp"
+#include "tt_metal/distributed/mesh_device_impl.hpp"
 
 namespace tt::tt_metal::experimental {
-
-// AllocatorImpl has no virtual methods, so dynamic_cast is not available.
-// Track MockAllocator instances via a static registry to enable safe downcasting.
-static std::unordered_set<void*> s_mock_allocator_registry;
 
 class MockAllocator : public L1BankingAllocator {
 public:
@@ -22,17 +18,26 @@ public:
 };
 
 std::unique_ptr<AllocatorImpl> make_mock_allocator(const AllocatorConfig& config) {
-    auto alloc = std::make_unique<MockAllocator>(config);
-    s_mock_allocator_registry.insert(alloc.get());
-    return alloc;
+    return std::make_unique<MockAllocator>(config);
 }
 
+// AllocatorImpl has no virtual destructor, so a static pointer-set registry would silently
+// leak entries when MockAllocators are destroyed (slicing skips ~MockAllocator()), and the
+// next L1BankingAllocator at a reused heap address would false-positive as mock. Instead,
+// derive mockness from the device's MetalContext cluster type — that's address-stable and
+// matches how Device::initialize_allocator() picked MockAllocator in the first place.
 MockAllocator* get_mock_allocator(distributed::MeshDevice* device) {
-    auto* impl = device->allocator_impl().get();
-    if (s_mock_allocator_registry.count(impl)) {
-        return static_cast<MockAllocator*>(impl);
+    if (device == nullptr) {
+        return nullptr;
     }
-    return nullptr;
+    auto context_id = device->impl().get_context_id();
+    if (!MetalContext::instance_exists(context_id)) {
+        return nullptr;
+    }
+    if (MetalContext::instance(context_id).get_cluster().get_target_device_type() != tt::TargetDevice::Mock) {
+        return nullptr;
+    }
+    return static_cast<MockAllocator*>(device->allocator_impl().get());
 }
 
 AllocatorState extract_mock_allocator_state(distributed::MeshDevice* device) {
