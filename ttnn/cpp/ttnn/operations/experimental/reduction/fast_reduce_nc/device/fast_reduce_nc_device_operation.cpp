@@ -53,10 +53,6 @@ void FastReduceNCDeviceOperation::validate_on_program_cache_miss(
             "FastReduceNC preallocated output physical volume must be a multiple of tile element count {} (got {})",
             pre_out_tile_height * pre_out_tile_width,
             preallocated_output_tensor.physical_volume());
-            preallocated_output.value(),
-            "FastReduceNC",
-            "output",
-            {DataType::BFLOAT16, DataType::BFLOAT8_B, DataType::FLOAT32});
     }
 
     // validate input dim
