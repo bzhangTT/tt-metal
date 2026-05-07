@@ -7,6 +7,14 @@ on:
         description: "Actually close resolved issues (false = dry-run)"
         type: boolean
         default: false
+      check-passing-only:
+        description: "Fast mode: close passing jobs deterministically without AI"
+        type: boolean
+        default: false
+      llm-backend:
+        description: "LLM backend: 'copilot' or 'cursor'"
+        required: false
+        default: "copilot"
       issue-repo:
         description: "Repository containing the open auto-triage issues"
         required: false
@@ -29,10 +37,13 @@ jobs:
     uses: tenstorrent/tt-auto-triage/.github/workflows/lifecycle-ci.yaml@ebanerjee/issue-lifecycle
     with:
       close-issues: ${{ inputs.close-issues }}
+      check-passing-only: ${{ inputs.check-passing-only || false }}
+      llm-backend: ${{ inputs.llm-backend || 'copilot' }}
       issue-repo: ${{ inputs.issue-repo || 'ebanerjeeTT/issue_dump' }}
       target-repo: ${{ inputs.target-repo || 'tenstorrent/tt-metal' }}
       runs-to-evaluate: ${{ inputs.runs-to-evaluate || '3' }}
     secrets:
       GITHUB_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ISSUE_WRITE_TOKEN: ${{ secrets.EVAN_RESTRICTED_TOKEN }}
+      ISSUE_WRITE_TOKEN: ${{ secrets.EVAN_PAT }}
       CURSOR_API_KEY: ${{ secrets.EVAN_CURSOR_API_KEY }}
+      COPILOT_API_KEY: ${{ secrets.GITHUB_TOKEN }}
