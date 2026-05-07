@@ -242,11 +242,16 @@ public:
         // The resources visit is gated on has_prepare_resources because empty_resource_t
         // is not guaranteed to be reflectable, and visit_object_of_type would throw at
         // runtime on an unreflectable type that is not the target object_t.
-        static std::vector<tt::tt_metal::Buffer*> collect_tensor_buffers(
+        //
+        // Returns a stack-allocated SmallVector (16 inline slots) instead of a heap
+        // vector so the cache-hit fast path avoids one allocation per dispatch.
+        // The reflection itself is already compile-time generated; this just removes
+        // the runtime allocation tax.
+        static ttsl::SmallVector<tt::tt_metal::Buffer*, 16> collect_tensor_buffers(
             const tensor_args_t& tensor_args,
             const tensor_return_value_t& tensor_return_value,
             const resource_t& resources) {
-            std::vector<tt::tt_metal::Buffer*> buffers;
+            ttsl::SmallVector<tt::tt_metal::Buffer*, 16> buffers;
             auto collect = [&buffers](const Tensor& t) { buffers.push_back(t.buffer()); };
             ttsl::reflection::visit_object_of_type<Tensor>(collect, tensor_args);
             ttsl::reflection::visit_object_of_type<Tensor>(collect, tensor_return_value);
