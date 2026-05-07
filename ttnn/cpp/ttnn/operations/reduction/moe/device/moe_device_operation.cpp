@@ -223,6 +223,7 @@ void MoeDeviceOperation::validate_on_program_cache_miss(
             validate_sharded_operand(tensor_args.preallocated_output.value(), "preallocated_output");
         }
     }
+    TT_FATAL(
         is_row_broadcastable_mask(expert_logical_shape, input_logical_shape[-1]),
         "Expert mask must be row-broadcastable with last dim == input_shape[-1]. Got rank={} and shape={} for "
         "input_shape[-1]={}",
