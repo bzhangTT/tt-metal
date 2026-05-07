@@ -123,6 +123,12 @@ inline void _llk_unpack_reconfig_data_format_srca_impl_(
 
         TT_SETADCXX(p_setadc::UNP_A, (unpack_face_r_dim << 4) - 1, 0x0);
     }
+
+    // tt-metal#37571: don't let MOVA2D flush UInt16 (256, 512, …) as bf16 -0.
+    if (unpack_dst_format == static_cast<std::uint32_t>(DataFormat::UInt16))
+    {
+        cfg_reg_rmw_tensix<ALU_ACC_CTRL_Zero_Flag_disabled_src_RMW>(1);
+    }
 }
 
 // TODO NC: Clean up as the part of tt-metal#34499
@@ -167,6 +173,12 @@ inline void _llk_unpack_reconfig_data_format_srcb_impl_(
         cfg_reg_rmw_tensix<THCON_SEC1_REG0_TileDescriptor_ADDR32 + 1, 0, 0xffff0000>(0 | (unpack_num_faces << 16));
 
         TT_SETADCXX(p_setadc::UNP_B, (unpack_face_r_dim << 4) - 1, 0x0);
+    }
+
+    // tt-metal#37571: see _llk_unpack_reconfig_data_format_srca_impl_ for rationale.
+    if (unpack_dst_format == static_cast<std::uint32_t>(DataFormat::UInt16))
+    {
+        cfg_reg_rmw_tensix<ALU_ACC_CTRL_Zero_Flag_disabled_src_RMW>(1);
     }
 }
 
