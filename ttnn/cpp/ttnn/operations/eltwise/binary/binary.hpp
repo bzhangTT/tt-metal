@@ -167,10 +167,7 @@ Tensor invoke_binary_ng(
     const std::optional<bool>& fast_and_approximate_mode = false,
     const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
 
-// Dedicated helper for isclose: carries rtol, atol and equal_nan as first-class
-// parameters so the LLK kernel can bake them in as compile-time constants.
-// INT32 inputs are promoted to FLOAT32 internally — callers do not need to
-// pre-cast inputs.
+// Dedicated helper for isclose: carries rtol, atol and equal_nan as first-class parameters.
 Tensor invoke_binary_ng_isclose(
     const Tensor& lhs,
     const Tensor& rhs,
