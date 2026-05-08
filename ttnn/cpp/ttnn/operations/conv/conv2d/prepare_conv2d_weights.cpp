@@ -1223,6 +1223,13 @@ static Conv2dBlockConfig get_opt_block_config(
 
     const bool conv_is_1d_depthwise =
         is_1d_depthwise_conv(groups, in_channels, out_channels, kernel_size[0], kernel_size[1], input_height, has_bias);
+    const bool coalesce_1d_depthwise_kw_reads = should_coalesce_1d_depthwise_conv_reads(
+        conv_is_1d_depthwise,
+        parallel_config.shard_scheme,
+        in_channels_padded,
+        kernel_size[1],
+        dilation[1],
+        input_dtype);
 
     return determine_per_core_conv_block_config(
         parallel_config,
@@ -1237,7 +1244,8 @@ static Conv2dBlockConfig get_opt_block_config(
         get_fp32_dest_acc_en(compute_config),
         conv_config.full_inner_dim,
         conv_config.enable_activation_reuse,
-        conv_is_1d_depthwise);
+        conv_is_1d_depthwise,
+        coalesce_1d_depthwise_kw_reads);
 }
 
 static uint32_t calculate_out_channels_padded(uint32_t out_channels, const ParallelConfig& output_parallel_config) {
@@ -1501,6 +1509,18 @@ static Conv2dWeightsBiasPrepConfig setup_conv_prep_config(
     ParallelConfig output_parallel_config = determine_output_parallel_config(
         parallel_config, output_compute_grid_size, out_channels, parallel_config.shard_orientation, mm_conv);
 
+    const bool conv_is_1d_depthwise =
+        is_1d_depthwise_conv(groups, in_channels, out_channels, kernel_size[0], kernel_size[1], input_height, has_bias);
+    const uint32_t in_channels_padded = tt::round_up(
+        in_channels, get_num_cores_channels_from_parallel_config(parallel_config) * input_channels_alignment);
+    const bool coalesce_1d_depthwise_kw_reads = should_coalesce_1d_depthwise_conv_reads(
+        conv_is_1d_depthwise,
+        parallel_config.shard_scheme,
+        in_channels_padded,
+        kernel_size[1],
+        dilation[1],
+        input_dtype);
+
     const bool auto_shard = !input_memory_config.is_sharded() && !conv_config.shard_layout.has_value();
     return Conv2dWeightsBiasPrepConfig(
         input_channels_alignment,
@@ -1519,6 +1539,7 @@ static Conv2dWeightsBiasPrepConfig setup_conv_prep_config(
         conv_config.enable_kernel_stride_folding.value(),
         conv_config.full_inner_dim,
         conv_config.enable_activation_reuse,
+        coalesce_1d_depthwise_kw_reads,
         orig_stride);
 }
 
@@ -1560,8 +1581,9 @@ static ttnn::Tensor prepare_conv_weights_internal(
             // with each kernel tap occupying its own act_block_h_ntiles * TILE_HEIGHT slab in axis 1.
             // The depthwise factory feeds each tap as a separate weight block via
             // num_blocks_weight_h == kernel_h * kernel_w, so the per-block height is just
-            // act_block_h_ntiles (not multiplied by kernel_w).
-            params.weight_block_h_ntiles = params.act_block_h_ntiles;
+            // act_block_h_ntiles unless the reader coalesces the whole kernel-width window.
+            params.weight_block_h_ntiles =
+                params.act_block_h_ntiles * (params.coalesce_1d_depthwise_kw_reads ? original_weights_window_w : 1);
         } else {
             weight_tensor_ =
                 convert_conv_weight_tensor_to_grouped_layout(weight_tensor_, params.groups, weight_tensor_.dtype());
@@ -1604,11 +1626,9 @@ static ttnn::Tensor prepare_conv_weights_internal(
             weight_tensor_, weights_channels_padded_shape.to_array_4D(), tt::tt_metal::Array4D({0, 0, 0, 0}), 0);
 
         if (input_parallel_config.shard_scheme == TensorMemoryLayout::HEIGHT_SHARDED) {
-            // 1D depthwise feeds each kernel tap as its own weight block (num_blocks_weight_h ==
-            // kernel_h * kernel_w), so the per-block height (weight_block_h_ntiles) is smaller than
-            // the total inner-dim of the prepared weight tensor. The "special-padding" tile layout
-            // asserts inner_dim <= block_h, which holds only for single-block convs. Use the regular
-            // tile-layout converter for depthwise to avoid that assertion.
+            // 1D depthwise can either feed each kernel tap separately or one coalesced kernel-width
+            // block. Use the regular tile-layout converter because the special-padding converter
+            // assumes a conventional conv inner dimension.
             if (is_conv_1d_depthwise_conv) {
                 weight_tensor_ = convert_conv_weight_tensor_to_tiled_layout(
                     weight_tensor_, params.weight_block_h_ntiles, params.weight_block_w_ntiles, weight_tensor_.dtype());

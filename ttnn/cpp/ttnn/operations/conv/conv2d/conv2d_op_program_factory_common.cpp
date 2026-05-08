@@ -22,6 +22,7 @@ namespace ttnn::prim {
 
 using ttnn::operations::conv::conv_skip_mcast;
 using ttnn::operations::conv::is_1d_depthwise_conv;
+using ttnn::operations::conv::should_coalesce_1d_depthwise_conv_reads;
 using ttnn::operations::conv::SkipMcast;
 
 constexpr uint32_t l1_scratchpad_CB_size = 64;
@@ -162,7 +163,11 @@ std::vector<CBInfo> get_cb_info(
     const uint32_t per_core_out_ntiles =
         pconfig.per_core_out_matrix_height_ntile * pconfig.per_core_out_matrix_width_ntile;
 
-    const uint32_t num_blocks_act_w = weight_matrix_height_ntiles / block_config.act_block_w_ntiles;
+    const bool coalesce_1d_depthwise_kw_reads = should_coalesce_1d_depthwise_conv_reads(
+        is_1d_depthwise_conv, sharding_scheme, input_channels_padded, kernel_size[1], dilation[1], input_datatype);
+    const uint32_t num_blocks_act_w = is_1d_depthwise_conv
+                                          ? (coalesce_1d_depthwise_kw_reads ? 1 : kernel_size[0] * kernel_size[1])
+                                          : weight_matrix_height_ntiles / block_config.act_block_w_ntiles;
 
     const uint32_t conv_act_c_blocks = weight_matrix_width_ntiles / per_core_out_matrix_width_ntiles;
     const uint32_t in0_num_blocks_w =
@@ -175,12 +180,10 @@ std::vector<CBInfo> get_cb_info(
 
     {
         // Weights CB
-        // For 1D depthwise conv, each kernel tap is fed as a separate weight block (see
-        // num_blocks_act_w in conv2d_op_sharded_program_factory). The weights CB only holds a
-        // single tap at a time (act_block_h_ntiles inner-dim) — full kernel-window inner dim would
-        // waste L1 and trip the static-CB-vs-L1-buffer overlap check for large channels.
         uint32_t weight_inner_dim_ntiles =
-            is_1d_depthwise_conv ? block_config.act_block_h_ntiles : block_config.act_block_w_ntiles;
+            is_1d_depthwise_conv
+                ? block_config.act_block_h_ntiles * (coalesce_1d_depthwise_kw_reads ? kernel_size[1] : 1)
+                : block_config.act_block_w_ntiles;
         uint32_t weight_block_num_tiles = per_core_out_matrix_width_ntiles * weight_inner_dim_ntiles;
         if (sharding_scheme == TensorMemoryLayout::HEIGHT_SHARDED) {
             // If activation reuse is enabled, we already have full inner dim

@@ -73,13 +73,59 @@ inline void mul_and_accumulate_block(
     }
 }
 
+template <uint32_t in0_block_w, uint32_t kernel_width, uint32_t block_num_tiles>
+inline void mul_and_accumulate_coalesced_block(
+    experimental::CB in0_cb, experimental::CB in1_cb, experimental::CB out_cb) {
+    static_assert(kernel_width > 1);
+    static_assert(in0_block_w % kernel_width == 0);
+    static_assert(block_num_tiles % in0_block_w == 0);
+
+    constexpr uint32_t in_channels_ntiles = in0_block_w / kernel_width;
+    constexpr uint32_t act_block_h_ntiles = block_num_tiles / in0_block_w;
+
+    const uint32_t in0_cb_id = in0_cb.get_cb_id();
+    const uint32_t in1_cb_id = in1_cb.get_cb_id();
+    const uint32_t out_cb_id = out_cb.get_cb_id();
+
+    in0_cb.wait_front(block_num_tiles);
+    in1_cb.wait_front(block_num_tiles);
+
+    for (uint32_t h = 0; h < act_block_h_ntiles; ++h) {
+        for (uint32_t c = 0; c < in_channels_ntiles; ++c) {
+            ACQ();
+
+            reconfig_data_format_srca(in0_cb_id);
+            reconfig_data_format_srcb(in1_cb_id);
+
+            for (uint32_t tap = 0; tap < kernel_width; ++tap) {
+                const uint32_t act_tile_idx = h * in0_block_w + tap * in_channels_ntiles + c;
+                const uint32_t weight_tile_idx =
+                    tap * act_block_h_ntiles * in_channels_ntiles + h * in_channels_ntiles + c;
+                mul_tiles_init(in0_cb_id, in1_cb_id, tap != 0 ? 1U : 0U, __builtin_LINE());
+                mul_tiles(in0_cb_id, in1_cb_id, act_tile_idx, weight_tile_idx, 0);
+            }
+
+            out_cb.reserve_back(1);
+            pack_tile(0, out_cb_id);
+            out_cb.push_back(1);
+
+            REL();
+        }
+    }
+
+    in0_cb.pop_front(block_num_tiles);
+    in1_cb.pop_front(block_num_tiles);
+}
+
 // Compile-time args (host: 1D depthwise branch in conv2d_op_sharded_program_factory.cpp):
 //   0: in0_block_w (inner block width in tiles)
 //   1: in0_num_subblocks (passed to compute_kernel_lib::tilize)
 //   2: in0_block_num_tiles (output tiles per call to mul_and_accumulate_block)
 //   3: in0_num_blocks_h (per-core H-block count)
-//   4: in0_num_blocks_w (kernel-tap block count = filter_h * filter_w)
+//   4: in0_num_blocks_w (kernel-tap block count, or 1 for coalesced kernel-width reads)
 //   5..8: CB indices (raw in0, in1, tilized in0, out)
+//   9: kernel_width
+//   10: coalesce kernel-width activation reads
 void kernel_main() {
     constexpr uint32_t in0_block_w = get_compile_time_arg_val(0);
     constexpr uint32_t in0_num_subblocks = get_compile_time_arg_val(1);
@@ -90,6 +136,8 @@ void kernel_main() {
     constexpr uint32_t in1_cb_id = get_compile_time_arg_val(6);
     constexpr uint32_t tilized_in0_cb_id = get_compile_time_arg_val(7);
     constexpr uint32_t out_cb_id = get_compile_time_arg_val(8);
+    constexpr uint32_t kernel_width = get_compile_time_arg_val(9);
+    constexpr bool coalesce_kw_reads = get_compile_time_arg_val(10) == 1;
 
     experimental::CB cb_tilized_in0(tilized_in0_cb_id);
     experimental::CB cb_in1(in1_cb_id);
@@ -102,10 +150,15 @@ void kernel_main() {
 
     for (uint32_t in0_block_h_i = 0; in0_block_h_i < in0_num_blocks_h; ++in0_block_h_i) {
         for (uint32_t in0_block_w_i = 0; in0_block_w_i < in0_num_blocks_w; ++in0_block_w_i) {
-            const uint32_t idx = in0_block_h_i * in0_num_blocks_w + in0_block_w_i;
             compute_kernel_lib::tilize<in0_block_w, in0_cb_id, tilized_in0_cb_id>(in0_num_subblocks);
             reconfig_data_format_srca(tilized_in0_cb_id);
-            mul_and_accumulate_block(cb_tilized_in0, cb_in1, cb_out, in0_block_num_tiles, idx);
+            if constexpr (coalesce_kw_reads) {
+                mul_and_accumulate_coalesced_block<in0_block_w, kernel_width, in0_block_num_tiles>(
+                    cb_tilized_in0, cb_in1, cb_out);
+            } else {
+                const uint32_t idx = in0_block_h_i * in0_num_blocks_w + in0_block_w_i;
+                mul_and_accumulate_block(cb_tilized_in0, cb_in1, cb_out, in0_block_num_tiles, idx);
+            }
         }
     }
 }

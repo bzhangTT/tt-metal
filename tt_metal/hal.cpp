@@ -11,6 +11,7 @@
 
 #include "hal_types.hpp"
 #include "impl/context/metal_context.hpp"
+#include <tt_stl/assert.hpp>
 
 // NOLINTBEGIN(misc-unused-using-decls)
 using tt::tt_metal::HalL1MemAddrType;
@@ -35,6 +36,17 @@ uint32_t get_l1_size() {
 uint32_t get_dram_alignment() { return tt::tt_metal::MetalContext::instance().hal().get_alignment(HalMemType::DRAM); }
 
 uint32_t get_l1_alignment() { return tt::tt_metal::MetalContext::instance().hal().get_alignment(HalMemType::L1); }
+
+uint32_t get_noc_max_burst_size(tt::ARCH arch) {
+    switch (arch) {
+        case tt::ARCH::WORMHOLE_B0: return 256 * 32;
+        case tt::ARCH::BLACKHOLE: return 256 * 64;
+        case tt::ARCH::QUASAR: return 256 * 256;
+        default: TT_THROW("Unsupported architecture for NOC max burst size: {}", arch);
+    }
+}
+
+uint32_t get_noc_max_burst_size() { return get_noc_max_burst_size(get_arch()); }
 
 uint32_t get_pcie_alignment() { return tt::tt_metal::MetalContext::instance().hal().get_alignment(HalMemType::HOST); }
 

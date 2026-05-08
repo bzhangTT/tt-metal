@@ -47,6 +47,20 @@ uint32_t get_dram_alignment();
 uint32_t get_l1_alignment();
 
 /**
+ * @brief Uses the hardware abstraction layer to inform client of architecture specific NoC maximum burst size.
+ *
+ * @return Maximum single-packet NoC burst size in bytes.
+ */
+uint32_t get_noc_max_burst_size();
+
+/**
+ * @brief Returns the architecture specific NoC maximum burst size.
+ *
+ * @return Maximum single-packet NoC burst size in bytes.
+ */
+uint32_t get_noc_max_burst_size(tt::ARCH arch);
+
+/**
  * @brief Uses the hardware abstraction layer to inform client of architecture specific PCIE alignment.
  *
  * @return Alignment requirement in bytes

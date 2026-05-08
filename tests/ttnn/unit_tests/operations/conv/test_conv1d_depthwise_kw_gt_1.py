@@ -6,15 +6,9 @@
 # ("change depthwise condition") and tracked in issue #42163.
 #
 # Mamba's mixer.conv1d is a depthwise 1D conv with kernel_size=4, kernel_height=1.
-# Before dadf6a7bf0 it routed through the 2D depthwise factory. After that commit
-# 2D depthwise excludes the height-1d case, and 1D depthwise still requires
-# kernel_width==1 (`is_1d_depthwise_conv`), so the op falls through to the general
-# conv path. With HEIGHT_SHARDED + 2560 channels:
-#   conv_act_c_read_bytes  = 2560 * 2 = 5120
-#   coalesced_read_bytes   = kernel_w * conv_act_c_read_bytes = 4 * 5120 = 20480
-# which trips
-#   static_assert(coalesced_read_bytes <= NOC_MAX_BURST_SIZE)  // 20480 <= 8192
-# in reader_conv_activations_padded_with_halo_3x3_weights_v2.cpp.
+# These cases cover both paths in the specialized 1D depthwise factory:
+# - 2560 channels: stick_bytes * kernel_w exceeds WH NOC burst, so reads stay per tap.
+# - 512 channels: stick_bytes * kernel_w fits, so the kernel-width sticks are coalesced.
 
 import pytest
 import torch
@@ -25,6 +19,9 @@ import ttnn
 @pytest.mark.parametrize(
     "input_channels, input_length, kernel_size",
     [
+        (512, 257, 2),
+        (512, 257, 3),
+        (512, 257, 4),
         (2560, 1027, 2),
         (2560, 1027, 3),
         (2560, 1027, 4),  # mamba 2.8B per-split shape

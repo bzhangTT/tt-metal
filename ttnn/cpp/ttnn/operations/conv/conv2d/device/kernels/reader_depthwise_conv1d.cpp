@@ -24,6 +24,9 @@ void kernel_main() {
     constexpr uint32_t cb_id_act = get_compile_time_arg_val(21);
     constexpr uint32_t cb_id_sharded_act = get_compile_time_arg_val(22);
     constexpr uint32_t cb_reader_indices = get_compile_time_arg_val(23);
+    // Depthwise reuses the common reader arg slot that non-depthwise height-sharded conv uses for
+    // activation reuse. Activation reuse is unsupported for the 1D depthwise path.
+    constexpr bool coalesce_kw_reads = get_compile_time_arg_val(28) == 1;
 
     // LOOP TO FILL READER OFFSETS
     /* We can add another loop to read chunks of a stick as well.
@@ -55,12 +58,13 @@ void kernel_main() {
 
     uint32_t reader_idx = 0;
 
-    // The host emits one CB block per kernel tap (window_outer == filter_h * filter_w), so each
-    // per-stride read fetches a single channel-stick — no coalescing across kernel taps. Restoring
-    // the original kw-coalescing requires the bigger redesign (one big block + kw mul-add per
-    // output tile in compute) which is tracked separately.
-    constexpr uint32_t num_coalesced_reads = 1;
+    constexpr uint32_t num_coalesced_reads = coalesce_kw_reads ? weight_size_w : 1;
     constexpr uint32_t coalesced_read_bytes = num_coalesced_reads * conv_act_c_read_bytes;
+    static_assert(!coalesce_kw_reads || weight_size_h == 1);
+    static_assert(!coalesce_kw_reads || window_outer == 1);
+    static_assert(!coalesce_kw_reads || window_inner == weight_size_w);
+    static_assert(!coalesce_kw_reads || coalesced_read_bytes <= NOC_MAX_BURST_SIZE);
+
     reader_offset_idx = 0;
     uint32_t act_l1_offset = 0;
     uint32_t act_l1_read_addr = sharded_act_cb.get_read_ptr();

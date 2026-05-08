@@ -425,7 +425,8 @@ Conv2dBlockConfig determine_per_core_conv_block_config(
     bool fp32_accum,
     bool full_inner_dim,
     bool enable_activation_reuse,
-    bool is_1d_depthwise_conv) {
+    bool is_1d_depthwise_conv,
+    bool coalesce_1d_depthwise_kw_reads) {
     if (act_block_h_override > 0) {
         TT_ASSERT(
             act_block_h_override % 32 == 0,
@@ -470,10 +471,9 @@ Conv2dBlockConfig determine_per_core_conv_block_config(
     TT_ASSERT(padded_in_channels % act_c_num_blocks == 0);
     uint32_t act_block_w = 0;
     if (parallel_config.shard_scheme == TensorMemoryLayout::HEIGHT_SHARDED) {
-        // For 1D depthwise conv, each channel is processed independently, so activation
-        // block width doesn't need to be multiplied by the kernel window size
         if (is_1d_depthwise_conv) {
-            act_block_w = tt::round_up(padded_in_channels, tt::constants::TILE_WIDTH);
+            const uint32_t depthwise_window_scaler = coalesce_1d_depthwise_kw_reads ? window_w : 1;
+            act_block_w = tt::round_up(padded_in_channels * depthwise_window_scaler, tt::constants::TILE_WIDTH);
         } else {
             act_block_w = enable_activation_reuse
                               ? tt::round_up(padded_in_channels * window_h * window_w, tt::constants::TILE_WIDTH)
@@ -535,6 +535,25 @@ bool is_1d_depthwise_conv(
     // 1D depthwise path supports kernel_height == 1 (and any kernel_width >= 1). The kw>1 case
     // accumulates across kernel taps via per-tap blocks in the depthwise factory.
     return is_depthwise_conv && is_1d_conv(kernel_height, image_height) && !has_bias;
+}
+
+bool should_coalesce_1d_depthwise_conv_reads(
+    bool is_1d_depthwise_conv,
+    TensorMemoryLayout input_tensor_memory_layout,
+    uint32_t input_channels_padded,
+    uint32_t kernel_width,
+    uint32_t dilation_w,
+    DataType input_datatype) {
+    if (!is_1d_depthwise_conv || input_tensor_memory_layout != TensorMemoryLayout::HEIGHT_SHARDED ||
+        kernel_width <= 1 || dilation_w != 1) {
+        return false;
+    }
+
+    // Halo output consumed by conv is row-major FLOAT32 only for FLOAT32 input, BFLOAT16 otherwise.
+    const uint32_t conv_input_datum_size = input_datatype == DataType::FLOAT32 ? 4 : 2;
+    const uint64_t coalesced_read_bytes =
+        static_cast<uint64_t>(input_channels_padded) * conv_input_datum_size * kernel_width;
+    return coalesced_read_bytes <= tt::tt_metal::hal::get_noc_max_burst_size();
 }
 
 SkipMcast conv_skip_mcast(const Conv2dParallelizationConfig& parallelization_config, TensorMemoryLayout memory_layout) {
@@ -999,7 +1018,14 @@ core_count_and_size calculate_L1_usage_for_conv_op(
         output_width,
         kernel_size,
         compute_grid_size,
-        conv_is_1d_depthwise);
+        conv_is_1d_depthwise,
+        should_coalesce_1d_depthwise_conv_reads(
+            conv_is_1d_depthwise,
+            input_parallel_config.shard_scheme,
+            in_channels_padded,
+            kernel_size[1],
+            dilation[1],
+            input_datatype));
 
     SlidingWindowConfig sliding_window_config{
         .input_hw = {input_height, input_width}, .window_hw = {kernel_size[0], kernel_size[1]}};
@@ -1179,7 +1205,8 @@ std::tuple<Conv2dParallelizationConfig, Conv2dBlockConfig, MemoryConfig> get_con
     uint32_t output_width,
     std::array<uint32_t, 2> kernel_size,
     const CoreCoord& /*compute_grid*/,
-    bool is_1d_depthwise_conv) {
+    bool is_1d_depthwise_conv,
+    bool coalesce_1d_depthwise_kw_reads) {
     uint32_t round_up_size = tt::constants::TILE_HEIGHT;
     uint32_t nhw_out = batch_size * output_height * output_width;
     uint32_t out_channels_padded = tt::round_up(
@@ -1210,7 +1237,8 @@ std::tuple<Conv2dParallelizationConfig, Conv2dBlockConfig, MemoryConfig> get_con
         get_fp32_dest_acc_en(compute_config),
         conv_config.full_inner_dim,
         conv_config.enable_activation_reuse,
-        is_1d_depthwise_conv);
+        is_1d_depthwise_conv,
+        coalesce_1d_depthwise_kw_reads);
     return {opt_conv_op_parallel_config, opt_conv_op_block_config, conv_out_memory_config};
 }
 
