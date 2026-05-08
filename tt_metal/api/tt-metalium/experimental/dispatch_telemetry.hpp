@@ -9,16 +9,17 @@
 namespace tt::tt_metal {
 
 /**
- * @brief Magic constant to verify data is valid.
+ * @brief Expected signature for validating that a telemetry buffer contains dispatch telemetry data.
  */
-constexpr uint32_t MAGIC_CONSTANT = 0x12345678;
+constexpr uint32_t DISPATCH_TELEMETRY_SIGNATURE = 0x12345678;
+constexpr uint32_t DISPATCH_TELEMETRY_VERSION = 1;
 
 /**
  * @brief Telemetry for prefetch.
  */
 struct PrefetchTelemetry {
-    const uint32_t version = 1;
-    const uint32_t magic_constant = MAGIC_CONSTANT;
+    uint32_t version = DISPATCH_TELEMETRY_VERSION;
+    uint32_t signature = DISPATCH_TELEMETRY_SIGNATURE;
     uint64_t blocked_count = 0;
     uint64_t unblocked_count = 0;
     uint64_t command_count = 0;
@@ -28,8 +29,8 @@ struct PrefetchTelemetry {
  * @brief Telemetry for dispatch.
  */
 struct DispatchTelemetry {
-    const uint32_t version = 1;
-    const uint32_t magic_constant = MAGIC_CONSTANT;
+    uint32_t version = DISPATCH_TELEMETRY_VERSION;
+    uint32_t signature = DISPATCH_TELEMETRY_SIGNATURE;
     uint64_t blocked_count = 0;
     uint64_t unblocked_count = 0;
 };

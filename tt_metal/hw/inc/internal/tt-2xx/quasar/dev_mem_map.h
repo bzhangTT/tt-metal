@@ -187,7 +187,8 @@
 #endif
 
 // Dispatch telemetry buffer, must be large enough to hold
-// max(sizeof(PrefetchTelemetry), sizeof(DispatchTelemetry))
+// max(sizeof(PrefetchTelemetry), sizeof(DispatchTelemetry)).
+// Keep extra headroom for future appended counters without moving the region.
 #define MEM_DISPATCH_TELEMETRY_REGION_SIZE 128
 
 #define MEM_DISPATCH_TELEMETRY_REGION_BASE (MEM_PACKET_HEADER_POOL_BASE + MEM_PACKET_HEADER_POOL_SIZE)

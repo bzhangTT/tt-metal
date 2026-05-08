@@ -171,7 +171,7 @@ void init_dispatch_telemetry() {
     copy_struct_to_l1(dispatch_telemetry_base, telemetry);
     // get telemtry and print all values
     DEVICE_PRINT("dispatch telemetry: version {}\n", get_dispatch_telemetry_ptr()->version);
-    DEVICE_PRINT("dispatch telemetry: magic_constant {}\n", get_dispatch_telemetry_ptr()->magic_constant);
+    DEVICE_PRINT("dispatch telemetry: signature {}\n", get_dispatch_telemetry_ptr()->signature);
     DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", get_dispatch_telemetry_ptr()->blocked_count);
     DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", get_dispatch_telemetry_ptr()->unblocked_count);
 }
