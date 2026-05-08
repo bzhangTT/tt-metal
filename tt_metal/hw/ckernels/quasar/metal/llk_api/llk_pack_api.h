@@ -71,9 +71,8 @@ inline void llk_pack_init(const std::uint32_t pack_output) {
 
     _llk_pack_init_(output_id);
 
-    // 32-bit dst format means we're on the unpack-to-dest path, so additionally set up the
-    // pack-thread dest section base for SyncHalf banking. The unpack <-> pack
-    // semaphores (sems 4/7) are initialized on the unpack side.
+    // 32-bit unpack-to-dest path: PACR addresses dest via SEC{pack::TRISC_ID}_Offset
+    // Initialize the section base to bank 0 for SyncHalf so the first PACR reads bank 0.
     const std::uint32_t in0_dst_format = pack_dst_format[0];
     if (in0_dst_format == (std::uint32_t)DataFormat::Float32 ||
         in0_dst_format == (std::uint32_t)DataFormat::Int32) {
@@ -102,27 +101,6 @@ inline void llk_pack(
     const std::uint32_t tile_index, const std::uint32_t pack_output, const std::uint32_t output_tile_index = 0) {
     const std::uint8_t output_id = get_output_id(pack_output);
     const std::uint32_t l1_tile_index = get_output_tile_index<out_of_order_output, false>(output_id, output_tile_index);
-
-    // 32-bit operand-0 → unpack-to-dest path.
-    // Wait for a filled dest bank, claim it, pack, then signal the bank free.
-    const std::uint32_t in0_dst_format = pack_dst_format[0];
-    if (in0_dst_format == (std::uint32_t)DataFormat::Float32 ||
-        in0_dst_format == (std::uint32_t)DataFormat::Int32) {
-        _llk_sync_wait_<p_stall::STALL_TDMA>(UNPACK_TO_DEST_UNPACK_SEMAPHORE, p_stall::STALL_ON_ZERO);
-        _llk_sync_get_(UNPACK_TO_DEST_UNPACK_SEMAPHORE);
-        _llk_pack_(tile_index, l1_tile_index);
-
-        // Drain PACK0 before posting "bank free", otherwise the next iteration's
-        // unpack could overwrite dest while the current pack is still in flight.
-        _llk_sync_post_<p_stall::PACK0>(UNPACK_TO_DEST_PACK_SEMAPHORE);
-        if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
-            _update_dest_register_offset_<true /*IS_32b_DEST_EN*/>();
-            const std::uint32_t base_addr = _get_dest_buffer_base_();
-            TTI_STALLWAIT(p_stall::STALL_CFG, 0, 0, p_stall::PACK0);
-            _set_dest_section_base_<ckernel::pack::TRISC_ID>(base_addr);
-        }
-        return;
-    }
 
     _llk_pack_(tile_index, l1_tile_index);
 }
@@ -210,18 +188,7 @@ inline void llk_pack_dest_dvalid_section_done() {
  * @brief Waits until math has finished producing data for the current Destination Register section.
  * Blocks on the math–pack semaphore so the packer does not read dest before math has written it.
  */
-inline void llk_packer_wait_for_math_done() {
-    
-    // In unpack-to-dest mode pack waits on UNPACK_TO_DEST_UNPACK (sem 4)
-    // inside llk_pack itself, not on MATH_PACK. The MATH_PACK handshake is
-    // unused, so this wait is a no-op.
-    const std::uint32_t dst_format = pack_dst_format[0];
-    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
-        dst_format == (std::uint32_t)DataFormat::Int32) {
-        return;
-    }
-    _llk_packer_wait_for_math_done_();
-}
+inline void llk_packer_wait_for_math_done() { _llk_packer_wait_for_math_done_(); }
 
 /**
  * @brief Signals that the packer has finished consuming the current Destination Register section.
@@ -234,9 +201,13 @@ inline void llk_pack_dest_section_done() {
     const std::uint32_t dst_format = pack_dst_format[0];
     if (dst_format == (std::uint32_t)DataFormat::Float32 ||
         dst_format == (std::uint32_t)DataFormat::Int32) {
-        return;
+        _llk_sync_get_<p_stall::PACK0>(semaphore::MATH_PACK);
+        if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
+            _llk_sync_advance_dest_section_<ckernel::pack::TRISC_ID, true /*EN_32BIT_DEST*/, p_stall::PACK0>();
+        }
+    } else { 
+        _llk_pack_dest_semaphore_section_done_<p_pacr::PACK0, DST_SYNC_MODE, is_fp32_dest_acc_en>();
     }
-    _llk_pack_dest_semaphore_section_done_<p_pacr::PACK0, DST_SYNC_MODE, is_fp32_dest_acc_en>();
 }
 
 /**

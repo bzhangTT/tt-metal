@@ -64,41 +64,6 @@ inline void _llk_unpack_configure_binary_(const tdma_descriptor_t& tdma_desc_src
     _llk_unpack_hw_configure_<UNP_SEL_1>(tdma_desc_src1);
 }
 
-/**
- * @brief Programs the global ALU format-spec register from the unpack thread for
- *        the unpack-to-dest path.
- *
- * In unpack-to-dest mode the math thread sits idle: the unpacker writes dest directly via UNPACR with UNP_DEST and the packer reads it through the
- * sem-4/7 handshake. The ALU_FORMAT_SPEC_REG (cfg addr 0..2) is global and controls dest interpretation specifically `ALU_ACC_CTRL_*_enabled` selects
- * 32-bit dest mode (4-byte entries) vs the default 16-bit mode (2-byte entries).
- *
- * @tparam EN_FP32_MATH_FORMAT  Set to true for Float32 dest mode.
- * @tparam EN_INT32_MATH_FORMAT Set to true for Int32 dest mode.
- *                              Both false ⇒ default 16-bit (Float16/Float16_b).
- *                              Mutually exclusive: at most one should be true.
- */
-template <bool EN_FP32_MATH_FORMAT, bool EN_INT32_MATH_FORMAT>
-inline void _llk_unpack_to_dest_hw_configure_()
-{
-    static_assert(!(EN_FP32_MATH_FORMAT && EN_INT32_MATH_FORMAT),
-                  "Float32 and Int32 dest modes are mutually exclusive");
-
-    ckernel::math::alu_config_u alu_config;
-    for (std::uint32_t i = 0; i < ckernel::math::NUM_WORDS_ALU_FORMAT; i++)
-    {
-        alu_config.val[i] = 0;
-    }
-
-    alu_config.f.ALU_ACC_CTRL_Fp32_enabled      = EN_FP32_MATH_FORMAT;
-    alu_config.f.ALU_ACC_CTRL_SFPU_Fp32_enabled = EN_FP32_MATH_FORMAT;
-    alu_config.f.ALU_ACC_CTRL_INT8_math_enabled = EN_INT32_MATH_FORMAT;
-
-    for (std::uint32_t i = 0; i < ckernel::math::NUM_WORDS_ALU_FORMAT; i++)
-    {
-        cfg[ALU_FORMAT_SPEC_REG_SrcA_val_ADDR32 + i] = alu_config.val[i];
-    }
-}
-
 template <DstSync DST>
 inline void _llk_unpack_dest_dvalid_section_done_()
 {

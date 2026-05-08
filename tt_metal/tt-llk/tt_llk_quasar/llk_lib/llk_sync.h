@@ -16,7 +16,7 @@ using namespace ckernel::trisc;
 // in the 0..31 range; the producer/consumer role is assigned at the call site.
 //
 // Usage notes:
-//  - `sem_index` is the integer semaphore id (e.g. UNPACK_TO_DEST_UNPACK_SEMAPHORE = 4),
+//  - `sem_index` is the integer semaphore id (e.g. semaphore::UNPACK_MATH = 4),
 //    NOT the one-hot bitmask form (e.g. p_stall::SEMAPHORE_4 = 0x10).
 //  - `_llk_sync_wait_` blocks until the semaphore satisfies the given condition
 //    (typically p_stall::STALL_ON_ZERO or p_stall::STALL_ON_MAX). The stall
@@ -39,16 +39,56 @@ inline void _llk_sync_wait_(std::uint8_t sem_index, std::uint32_t condition)
     TTI_SEMWAIT(StallRes, condition, 0, semaphore::t6_sem(sem_index));
 }
 
-// Decrement semaphore `sem_index`. Optionally stall on `WaitRes` first.
-template <std::uint32_t WaitRes = p_stall::NOTHING>
+// Decrement semaphore `sem_index`. Optionally stall on up to 3 resources first.
+template <std::uint32_t WaitRes0 = p_stall::NOTHING, std::uint32_t WaitRes1 = p_stall::NOTHING, std::uint32_t WaitRes2 = p_stall::NOTHING>
 inline void _llk_sync_get_(std::uint8_t sem_index)
 {
-    t6_semaphore_get<WaitRes>(sem_index);
+    t6_semaphore_get<WaitRes0, WaitRes1, WaitRes2>(sem_index);
 }
 
-// Increment semaphore `sem_index`. Optionally stall on `WaitRes` first.
-template <std::uint32_t WaitRes = p_stall::NOTHING>
+// Increment semaphore `sem_index`. Optionally stall on up to 3 resources first.
+template <std::uint32_t WaitRes0 = p_stall::NOTHING, std::uint32_t WaitRes1 = p_stall::NOTHING, std::uint32_t WaitRes2 = p_stall::NOTHING>
 inline void _llk_sync_post_(std::uint8_t sem_index)
 {
-    t6_semaphore_post<WaitRes>(sem_index);
+    t6_semaphore_post<WaitRes0, WaitRes1, WaitRes2>(sem_index);
+}
+
+// Stall the next CFG write until the listed resources (e.g. p_stall::PACK0,
+// p_stall::UNPACK0, p_stall::MATH) have drained. Use before reprogramming CFG
+// state that in-flight PACR/UNPACR/MATH instructions still depend on.
+template <std::uint32_t DrainRes0, std::uint32_t DrainRes1 = p_stall::NOTHING, std::uint32_t DrainRes2 = p_stall::NOTHING>
+inline void _llk_stall_cfg_on_()
+{
+    TTI_STALLWAIT(p_stall::STALL_CFG, DrainRes2, DrainRes1, DrainRes0);
+}
+
+/**
+ * @brief Advance the calling thread's dest-bank section in SyncHalf mode.
+ *
+ * Each thread (math, pack, unpack) keeps its own view of which dest bank it is
+ * currently operating on. After a thread has finished with one bank and handed
+ * off via a semaphore, it must (1) flip its local dest-register offset to the
+ * other bank, (2) wait for any in-flight instructions that still address the
+ * old base to drain, and (3) reprogram its per-TRISC dest section base before
+ * the next op issues. This helper performs those three steps in order.
+ *
+ * @tparam TRISC_ID       The calling thread (ckernel::math::TRISC_ID,
+ *                        ckernel::pack::TRISC_ID, or ckernel::unpack::TRISC_ID).
+ * @tparam EN_32BIT_DEST  True if the math destination register is in
+ *                        Float32/Int32 (32-bit) mode, false for 16-bit.
+ * @tparam DrainRes0      Primary stall resource to drain before reprogramming
+ *                        CFG (e.g. p_stall::PACK0, p_stall::UNPACK0, p_stall::MATH).
+ * @tparam DrainRes1      Optional second drain resource.
+ * @tparam DrainRes2      Optional third drain resource.
+ *
+ * @note The caller must gate this on DST_SYNC_MODE == DstSync::SyncHalf;
+ *       the bank-toggle is a no-op in SyncFull mode.
+ */
+template <std::uint8_t TRISC_ID, bool EN_32BIT_DEST, std::uint32_t DrainRes0, std::uint32_t DrainRes1 = p_stall::NOTHING, std::uint32_t DrainRes2 = p_stall::NOTHING>
+inline void _llk_sync_advance_dest_section_()
+{
+    _update_dest_register_offset_<EN_32BIT_DEST>();
+    const std::uint32_t base_addr = _get_dest_buffer_base_();
+    _llk_stall_cfg_on_<DrainRes0, DrainRes1, DrainRes2>();
+    _set_dest_section_base_<TRISC_ID>(base_addr);
 }

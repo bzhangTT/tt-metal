@@ -11,6 +11,7 @@
 #include "llk_io.h"
 #include "llk_math_common.h"
 #include "llk_operands.h"
+#include "llk_sync.h"
 
 /*************************************************************************
  * LLK MATH COMMON
@@ -51,42 +52,44 @@ template <bool EN_32BIT_DEST_FORMAT>
 inline void llk_math_hw_configure(const std::uint32_t srca_operand, const std::uint32_t srcb_operand) {
     const std::uint32_t srca_operand_id = get_operand_id(srca_operand);
 
-    // Math thread sits out unpack-to-dest mode; the unpack-side init has already
-    // programmed the ALU implied-format register for unpack-to-dest.
-    const std::uint32_t srca_dst_fmt = unpack_dst_format[srca_operand_id];
-    if (srca_dst_fmt == (std::uint32_t)DataFormat::Float32 ||
-        srca_dst_fmt == (std::uint32_t)DataFormat::Int32) {
-        return;
-    }
-
-    const std::uint32_t srcb_operand_id = get_operand_id(srcb_operand);
-
-    const DataFormat srca_format = static_cast<DataFormat>(unpack_dst_format[srca_operand_id]);
-    const DataFormat srcb_format = static_cast<DataFormat>(unpack_dst_format[srcb_operand_id]);
-
-    // TODO: AM; introduce dest mode enum, issue #37483
-    // Determine the dest format based on the srcA/B formats and EN_32BIT_DEST_FORMAT
-    if (EN_32BIT_DEST_FORMAT && is_src_fmt_fp32_dest_compatible(srca_format) &&
-        is_src_fmt_fp32_dest_compatible(srcb_format)) {
-        // TODO: AM; hardcoding false for EN_IMPLIED_MATH_FORMAT for now, will be fixed in issue #37720
-        _llk_math_srcAB_hw_configure_<
-            false /*EN_IMPLIED_MATH_FORMAT*/,
-            true /*EN_FP32_DEST_FORMAT*/,
-            false /*EN_INT32_DEST_FORMAT*/>(srca_format, srcb_format);
-    } else if (
-        EN_32BIT_DEST_FORMAT && is_src_fmt_int32_dest_compatible(srca_format) &&
-        is_src_fmt_int32_dest_compatible(srcb_format)) {
-        // TODO: AM; hardcoding false for EN_IMPLIED_MATH_FORMAT for now, will be fixed in issue #37720
-        _llk_math_srcAB_hw_configure_<
-            false /*EN_IMPLIED_MATH_FORMAT*/,
-            false /*EN_FP32_DEST_FORMAT*/,
-            true /*EN_INT32_DEST_FORMAT*/>(srca_format, srcb_format);
+    // Unpack 32-bit datums through unpack-to-dest. Math owns the ALU implied-format
+    // register; program it here once before any per-tile dest reads.
+    const std::uint32_t unpack_dst_fmt = unpack_dst_format[srca_operand_id];
+    if (unpack_dst_fmt == (std::uint32_t)DataFormat::Float32) {
+        _llk_math_upk_to_dest_hw_configure_<false /*EN_IMPLIED_MATH_FORMAT*/, true /*EN_FP32*/, false /*EN_INT32*/>();
+    } else if (unpack_dst_fmt == (std::uint32_t)DataFormat::Int32) {
+        _llk_math_upk_to_dest_hw_configure_<false /*EN_IMPLIED_MATH_FORMAT*/, false /*EN_FP32*/, true /*EN_INT32*/>();
     } else {
-        // TODO: AM; hardcoding false for EN_IMPLIED_MATH_FORMAT for now, will be fixed in issue #37720
-        _llk_math_srcAB_hw_configure_<
-            false /*EN_IMPLIED_MATH_FORMAT*/,
-            false /*EN_FP32_DEST_FORMAT*/,
-            false /*EN_INT32_DEST_FORMAT*/>(srca_format, srcb_format);
+
+        const std::uint32_t srcb_operand_id = get_operand_id(srcb_operand);
+
+        const DataFormat srca_format = static_cast<DataFormat>(unpack_dst_format[srca_operand_id]);
+        const DataFormat srcb_format = static_cast<DataFormat>(unpack_dst_format[srcb_operand_id]);
+
+        // TODO: AM; introduce dest mode enum, issue #37483
+        // Determine the dest format based on the srcA/B formats and EN_32BIT_DEST_FORMAT
+        if (EN_32BIT_DEST_FORMAT && is_src_fmt_fp32_dest_compatible(srca_format) &&
+            is_src_fmt_fp32_dest_compatible(srcb_format)) {
+            // TODO: AM; hardcoding false for EN_IMPLIED_MATH_FORMAT for now, will be fixed in issue #37720
+            _llk_math_srcAB_hw_configure_<
+                false /*EN_IMPLIED_MATH_FORMAT*/,
+                true /*EN_FP32_DEST_FORMAT*/,
+                false /*EN_INT32_DEST_FORMAT*/>(srca_format, srcb_format);
+        } else if (
+            EN_32BIT_DEST_FORMAT && is_src_fmt_int32_dest_compatible(srca_format) &&
+            is_src_fmt_int32_dest_compatible(srcb_format)) {
+            // TODO: AM; hardcoding false for EN_IMPLIED_MATH_FORMAT for now, will be fixed in issue #37720
+            _llk_math_srcAB_hw_configure_<
+                false /*EN_IMPLIED_MATH_FORMAT*/,
+                false /*EN_FP32_DEST_FORMAT*/,
+                true /*EN_INT32_DEST_FORMAT*/>(srca_format, srcb_format);
+        } else {
+            // TODO: AM; hardcoding false for EN_IMPLIED_MATH_FORMAT for now, will be fixed in issue #37720
+            _llk_math_srcAB_hw_configure_<
+                false /*EN_IMPLIED_MATH_FORMAT*/,
+                false /*EN_FP32_DEST_FORMAT*/,
+                false /*EN_INT32_DEST_FORMAT*/>(srca_format, srcb_format);
+        }
     }
 }
 
@@ -113,17 +116,17 @@ inline void llk_math_set_dvalid() {
  * Blocks on the MATH_PACK semaphore until the packer gets the semaphore.
  */
 inline void llk_math_wait_for_dest_available() {
-    // In unpack-to-dest mode the math thread sits out the per-tile loop;
-    // the dest-bank handshake runs on sems 4/7 inside the unpack/pack LLK
-    // helpers. The MATH_PACK semaphore is unused, so this wait is a no-op.
+    _llk_math_wait_for_dest_available_();
+
+    // In the unpack-to-dest path, math is also the consumer of UNPACK_MATH.
+    // Wait until the unpacker has filled a bank, then claim it.
     const std::uint32_t dst_format = unpack_dst_format[0];
     if (dst_format == (std::uint32_t)DataFormat::Float32 ||
         dst_format == (std::uint32_t)DataFormat::Int32) {
-        return;
+        _llk_sync_wait_<p_stall::STALL_MATH | p_stall::STALL_SFPU | p_stall::STALL_SYNC>(
+            semaphore::UNPACK_MATH, p_stall::STALL_ON_ZERO);
+        _llk_sync_get_(semaphore::UNPACK_MATH);
     }
-    WAYPOINT("MWDW");
-    _llk_math_wait_for_dest_available_();
-    WAYPOINT("MWDD");
 }
 
 /**
@@ -133,12 +136,12 @@ inline void llk_math_wait_for_dest_available() {
  */
 template <bool EN_32BIT_DEST>
 inline void llk_math_dest_section_done() {
-    const std::uint32_t dst_format = unpack_dst_format[0];
-    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
-        dst_format == (std::uint32_t)DataFormat::Int32) {
-        return;
+    // Always post MATH_PACK (and SyncHalf bank toggle), math thread is in the chain
+    // for every op, including the no-real-work unpack-to-dest forwarder.
+    _llk_sync_post_<p_stall::MATH, p_stall::WAIT_SFPU>(semaphore::MATH_PACK);
+    if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
+        _llk_sync_advance_dest_section_<ckernel::math::TRISC_ID, EN_32BIT_DEST, p_stall::WAIT_SFPU, p_stall::MATH>();
     }
-    _llk_math_dest_section_done_<DST_SYNC_MODE, EN_32BIT_DEST>();
 }
 
 /**
@@ -146,12 +149,14 @@ inline void llk_math_dest_section_done() {
  * Waits for any previous packs to finish, resets the dest bank id, initializes the MATH_PACK semaphore
  */
 inline void llk_math_pack_sync_init() {
-    // Operand 0 is the canonical input format. In unpack-to-dest mode the
-    // MATH_PACK semaphore is unused, so skip its init.
+    // Math owns sem init for the entire dest-bank chain. MATH_PACK is always inited;
+    // UNPACK_MATH is inited additionally in the unpack-to-dest path.
+    _llk_math_pack_sync_init_<DST_SYNC_MODE>();
+    
     const std::uint32_t dst_format = unpack_dst_format[0];
     if (dst_format == (std::uint32_t)DataFormat::Float32 ||
         dst_format == (std::uint32_t)DataFormat::Int32) {
-        return;
+        constexpr std::uint32_t N = (DST_SYNC_MODE == DstSync::SyncFull) ? 1 : 2;
+        _llk_sync_init_(semaphore::UNPACK_MATH, N, 0);
     }
-    _llk_math_pack_sync_init_<DST_SYNC_MODE>();
 }
