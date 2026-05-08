@@ -31,9 +31,18 @@ from helpers.llk_params import (
     UnpackerEngine,
     format_dict,
 )
-from helpers.param_config import parametrize
+from helpers.param_config import (
+    input_output_formats,
+    is_invalid_quasar_sfpu_format_combination,
+    parametrize,
+)
 from helpers.stimuli_config import StimuliConfig
-from helpers.stimuli_generator import generate_stimuli
+from helpers.stimuli_generator import (
+    apply_log_uniform_magnitudes,
+    compute_safe_input_magnitude_range,
+    format_elem_max,
+    generate_stimuli,
+)
 from helpers.test_config import TestConfig
 from helpers.test_variant_parameters import (
     DATA_COPY_TYPE,
@@ -46,7 +55,7 @@ from helpers.test_variant_parameters import (
     TILE_COUNT,
     UNPACKER_ENGINE_SEL,
 )
-from helpers.utils import passed_test, tolerances
+from helpers.utils import passed_test
 
 # ─── Input preparation ────────────────────────────────────────────────────────
 
@@ -55,104 +64,68 @@ def prepare_binary_max_min_inputs(
     src_A: torch.Tensor,
     src_B: torch.Tensor,
     input_format: DataFormat,
+    output_format: DataFormat,
 ) -> tuple:
     """
     Prepare two input tensors for binary max/min with safe value ranges.
 
-    Returns (in0, in1) both clamped to safe representable range for
-    the given input format. Both tensors have the same format.
+    Returns (in0, in1) clamped to safe representable range for the given
+    (input_format, output_format) pair. Both tensors have the same format.
 
-    For float formats: moderate log-uniform positive+negative values.
-    For Int32: moderate positive+negative integer values to avoid overflow.
+    For float formats: log-uniform magnitudes inside the format-aware safe
+    range from `compute_safe_input_magnitude_range`. The result of max/min
+    is one of the operands verbatim, so the per-operand cap is just the
+    smaller of the input and output format max magnitudes — this prevents
+    MX block-shared-exponent flushing when adjacent lanes within a 32-element
+    block straddle ranges the block exponent and 2-/3-bit mantissa cannot
+    span.
+    For integer formats: values inside ~1/8 of the format's representable
+    range to keep clear of extremes that trigger sign-magnitude edge cases.
     """
-    if input_format == DataFormat.Int32:
-        # For Int32: safe range avoids extreme values near INT32_MIN/MAX
-        # that could cause undefined behaviour in sign-magnitude comparison
-        max_val = 2**28  # well inside INT32 range; exercises both +/-
-        in0 = (src_A * max_val).to(torch.int32).to(torch.float32)
-        in1 = (src_B * max_val).to(torch.int32).to(torch.float32)
-        # Ensure values are representable as int32
-        in0 = torch.clamp(in0, -max_val, max_val)
-        in1 = torch.clamp(in1, -max_val, max_val)
+    torch_fmt = format_dict[input_format]
+
+    # Integer formats: scale to a safe fraction of the representable range.
+    # iinfo.max // 8 keeps Int32 at ~2^28 (matching the prior limit) and
+    # shrinks proportionally for Int16/Int8/UInt8.
+    if not torch_fmt.is_floating_point:
+        iinfo = torch.iinfo(torch_fmt)
+        max_val = iinfo.max // 8
+        in0 = (
+            torch.clamp(src_A * max_val, iinfo.min, iinfo.max)
+            .to(torch_fmt)
+            .to(torch.float32)
+        )
+        in1 = (
+            torch.clamp(src_B * max_val, iinfo.min, iinfo.max)
+            .to(torch_fmt)
+            .to(torch.float32)
+        )
         return in0, in1
 
-    # Float formats: log-uniform magnitudes, random signs
-    torch_fmt = format_dict[input_format]
-    finfo = torch.finfo(torch_fmt)
+    # max/min returns one operand verbatim → result magnitude == max(|in0|, |in1|)
+    cap = min(format_elem_max(input_format), format_elem_max(output_format))
+    min_mag, max_mag = compute_safe_input_magnitude_range(
+        input_format,
+        output_format,
+        input_magnitude_cap=cap,
+        output_magnitude_cap=cap,
+    )
 
-    max_safe = min(finfo.max * 0.9, 1e4)  # conservative; avoids overflow in any format
-    min_mag = max(finfo.tiny * 100, 1e-6)  # avoid denormals
-
-    def log_uniform(t: torch.Tensor) -> torch.Tensor:
-        """Map t in arbitrary range to log-uniform magnitudes [min_mag, max_safe]."""
-        t_f = t.to(torch.float32)
-        lo, hi = t_f.min(), t_f.max()
-        if hi > lo:
-            t_norm = (t_f - lo) / (hi - lo)
-        else:
-            t_norm = torch.zeros_like(t_f)
-        log_lo = torch.log(torch.tensor(min_mag, dtype=torch.float32))
-        log_hi = torch.log(torch.tensor(max_safe, dtype=torch.float32))
-        return torch.exp(log_lo + t_norm * (log_hi - log_lo))
-
-    mag_A = log_uniform(src_A)
-    mag_B = log_uniform(src_B)
-
-    # Assign signs: 50% negative for each
-    signs_A = torch.where(src_A.to(torch.float32) < 0, -1.0, 1.0)
-    signs_B = torch.where(src_B.to(torch.float32) < 0, -1.0, 1.0)
-
-    in0 = torch.clamp(signs_A * mag_A, -max_safe, max_safe)
-    in1 = torch.clamp(signs_B * mag_B, -max_safe, max_safe)
+    in0 = apply_log_uniform_magnitudes(
+        src_A,
+        min_magnitude=min_mag,
+        max_magnitude=max_mag,
+        cast_to_format=input_format,
+        sign_source=src_A,
+    )
+    in1 = apply_log_uniform_magnitudes(
+        src_B,
+        min_magnitude=min_mag,
+        max_magnitude=max_mag,
+        cast_to_format=input_format,
+        sign_source=src_B,
+    )
     return in0, in1
-
-
-# ─── Invalid-combination filter ────────────────────────────────────────────────
-
-
-def _is_invalid_quasar_combination(
-    fmt: FormatConfig, dest_acc: DestAccumulation
-) -> bool:
-    """
-    Returns True if the (fmt, dest_acc) combination is invalid for Quasar SFPU tests.
-
-    Bit-width rule (with the dual-path kernel):
-    - 32-bit input  → unpack_to_dest=True path → Dest must be 32-bit (dest_acc=Yes).
-    - Non-32-bit input → unpack_to_dest=False (FPU datacopy) path → dest_acc=No keeps
-      Dest at the input bit-width and avoids the 32-bit-Dest ELWADD path. (dest_acc=Yes
-      is left out of this matrix to keep it tight; the kernel supports it but we don't
-      need a second Dest mode for non-32-bit inputs here.)
-    - Non-Float32 → Float32 needs dest_acc=Yes.
-    - Float32 → Float16 needs dest_acc=Yes.
-    - Integer and float formats cannot be mixed in input→output.
-    """
-    in_fmt = fmt.input_format
-    out_fmt = fmt.output_format
-
-    if in_fmt.is_32_bit() != (dest_acc == DestAccumulation.Yes):
-        return True
-
-    # Quasar packer: non-Float32 → Float32 needs dest_acc=Yes
-    if (
-        in_fmt != DataFormat.Float32
-        and out_fmt == DataFormat.Float32
-        and dest_acc == DestAccumulation.No
-    ):
-        return True
-
-    # Quasar SFPU: Float32 → Float16 needs dest_acc=Yes
-    if (
-        in_fmt == DataFormat.Float32
-        and out_fmt == DataFormat.Float16
-        and dest_acc == DestAccumulation.No
-    ):
-        return True
-
-    # Integer and float cannot be mixed
-    if in_fmt.is_integer() != out_fmt.is_integer():
-        return True
-
-    return False
 
 
 # ─── Format lists (§7d coverage) ──────────────────────────────────────────────
@@ -162,17 +135,27 @@ def _is_invalid_quasar_combination(
 # Float16 is excluded: SFPSWAP VEC_MIN_MAX with FP16A in 16-bit Dest does not correctly
 # compare negative pairs in the simulator regardless of sfpmem::DEFAULT or FP16A load
 # mode. Float16_b (FP32 exponent bias) works correctly.
+
+_MAX_MIN_FLOAT_INPUTS = [
+    DataFormat.Float16_b,
+    DataFormat.Float16,
+    DataFormat.Float32,
+    DataFormat.MxFp8R,
+    DataFormat.MxFp8P,
+]
+_MAX_MIN_FLOAT_OUTPUTS = _MAX_MIN_FLOAT_INPUTS + []
+
 SFPU_BINARY_MAX_MIN_FLOAT_FORMATS = [
-    InputOutputFormat(DataFormat.Float16_b, DataFormat.Float16_b),
-    InputOutputFormat(DataFormat.Float32, DataFormat.Float32),
-    InputOutputFormat(DataFormat.MxFp8R, DataFormat.Float16_b),
-    InputOutputFormat(DataFormat.MxFp8P, DataFormat.Float16_b),
+    InputOutputFormat(in_fmt, out_fmt)
+    for in_fmt in _MAX_MIN_FLOAT_INPUTS
+    for out_fmt in _MAX_MIN_FLOAT_OUTPUTS
 ]
 
 # Int32 variant: 1 Yes-listed pair from §7d (UInt32 deferred — not in VALID_QUASAR_DEST_REG_FORMATS)
-SFPU_BINARY_MAX_MIN_INT32_FORMATS = [
-    InputOutputFormat(DataFormat.Int32, DataFormat.Int32),  # Int32 → Int32
-]
+SFPU_BINARY_MAX_MIN_INT32_FORMATS = input_output_formats(
+    [DataFormat.Int32, DataFormat.Int16, DataFormat.Int8, DataFormat.UInt8],
+    same=True,
+)
 
 
 # ─── Combination generators ────────────────────────────────────────────────────
@@ -195,16 +178,15 @@ def generate_binary_max_min_float_combinations(formats_list: List[FormatConfig])
         )
 
         for dest_acc in dest_acc_modes:
-            if _is_invalid_quasar_combination(fmt, dest_acc):
+            if is_invalid_quasar_sfpu_format_combination(fmt, dest_acc):
                 continue
 
             for implied_math_format in [ImpliedMathFormat.No, ImpliedMathFormat.Yes]:
-                # MX formats require implied_math_format=Yes
                 if (
                     in_fmt.is_mx_format()
                     and implied_math_format == ImpliedMathFormat.No
                 ):
-                    continue
+                    continue  # MX formats require implied_math_format=Yes
 
                 for is_max_op in [True, False]:  # max AND min
                     for input_dimensions in [[32, 32]]:
@@ -236,7 +218,7 @@ def generate_binary_max_min_int32_combinations(formats_list: List[FormatConfig])
         )
 
         for dest_acc in dest_acc_modes:
-            if _is_invalid_quasar_combination(fmt, dest_acc):
+            if is_invalid_quasar_sfpu_format_combination(fmt, dest_acc):
                 continue
 
             for is_max_op in [True, False]:  # max AND min
@@ -280,7 +262,9 @@ def test_binary_max_min_float_quasar(formats_dest_acc_implied_math_is_max_input_
     )
 
     # Prepare in0 and in1 inputs with safe value ranges
-    in0, in1 = prepare_binary_max_min_inputs(src_A, src_B, formats.input_format)
+    in0, in1 = prepare_binary_max_min_inputs(
+        src_A, src_B, formats.input_format, formats.output_format
+    )
 
     # Convert to target format
     torch_fmt = format_dict[formats.input_format]
@@ -313,6 +297,13 @@ def test_binary_max_min_float_quasar(formats_dest_acc_implied_math_is_max_input_
 
     output_torch_fmt = format_dict[formats.output_format]
     golden_tensor = golden_f32.to(output_torch_fmt)
+
+    # Mirror the output-side MX pack quantization: the kernel re-quantizes the
+    # max/min result with a fresh per-block exponent on the way back to L1.
+    if formats.output_format.is_mx_format():
+        golden_tensor = quantize_mx_stimuli(
+            golden_tensor.flatten(), formats.output_format, num_faces
+        ).reshape(golden_tensor.shape)
 
     # buffer_A has 2 tiles: tile 0 = in0, tile 1 = in1, concatenated.
     # StimuliConfig with tile_count_A=2 reads buffer_A[0:1024] as tile 0
@@ -383,21 +374,10 @@ def test_binary_max_min_float_quasar(formats_dest_acc_implied_math_is_max_input_
 
     res_tensor = torch.tensor(res_from_L1, dtype=output_torch_fmt)
 
-    # For MX inputs, the kernel's effective precision is bounded by the MX format,
-    # not by the (tighter) Float16_b output format. Override the tolerance accordingly.
-    custom_atol = None
-    custom_rtol = None
-    if formats.input_format.is_mx_format():
-        mx_tol = tolerances[formats.input_format]
-        custom_atol = mx_tol.atol
-        custom_rtol = mx_tol.rtol
-
     assert passed_test(
         golden_tensor,
         res_tensor,
         formats.output_format,
-        custom_atol=custom_atol,
-        custom_rtol=custom_rtol,
     ), (
         f"Assert against golden failed for is_max_op={is_max_op}, "
         f"format={formats.input_format}->{formats.output_format}, dest_acc={dest_acc}"
@@ -437,7 +417,9 @@ def test_binary_max_min_int32_quasar(formats_dest_acc_is_max_input_dims):
     )
 
     # Prepare int32 inputs (returns float32-container tensors in [-2^28, 2^28])
-    in0_f, in1_f = prepare_binary_max_min_inputs(src_A, src_B, formats.input_format)
+    in0_f, in1_f = prepare_binary_max_min_inputs(
+        src_A, src_B, formats.input_format, formats.output_format
+    )
 
     # Convert to actual int32 for packing and golden computation
     in0_int = in0_f.to(torch.int32)

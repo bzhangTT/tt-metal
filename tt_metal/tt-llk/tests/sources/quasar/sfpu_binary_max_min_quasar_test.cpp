@@ -121,7 +121,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
     }
 
     DataFormat src_format = static_cast<DataFormat>(formats.math);
-    _llk_math_srcAB_hw_configure_<IMPLIED_MATH_FORMAT, is_fp32_dest_acc_en, is_int_fpu_en>(src_format, src_format);
+    _llk_math_srcAB_hw_configure_<false, is_fp32_dest_acc_en, is_int_fpu_en>(src_format, src_format);
 
     // FPU-datacopy path: move all TILE_CNT input tiles from SrcA into Dest at
     // DST_INDEX + i. Required for non-32-bit and MX formats; skipped when the
@@ -143,12 +143,11 @@ void run_kernel(RUNTIME_PARAMETERS params)
     // The 3-operand offsets are relative to dst_tile_index (set as the Dest base
     // by _llk_math_eltwise_unary_sfpu_start_).
     //
-    // The int32-variant and the FP16A SFPLOAD mode are selected from the runtime
-    // data format (formats.math); only the IS_MAX_OP choice stays compile-time
-    // because it isn't derivable from the format.
-    const DataFormat math_fmt = static_cast<DataFormat>(formats.math);
-    const bool is_int32       = (math_fmt == DataFormat::Int32);
-    const bool is_fp16a       = (math_fmt == DataFormat::Float16);
+    // The int32-variant is picked at runtime from the data format. The float
+    // path uses sfpmem::DEFAULT for SFPLOAD/SFPSTORE — the unpacker /
+    // _llk_math_srcAB_hw_configure_ already programs SrcB format and SFPU_Fp32,
+    // which DEFAULT resolves through — so no compile-time format dispatch needed.
+    const bool is_int32 = (static_cast<DataFormat>(formats.math) == DataFormat::Int32);
 
     if (is_int32)
     {
@@ -163,24 +162,12 @@ void run_kernel(RUNTIME_PARAMETERS params)
     else
     {
         binary_max_min_init<IS_MAX_OP>();
-        if (is_fp16a)
-        {
-            _llk_math_eltwise_unary_sfpu_params_(
-                ckernel::sfpu::calculate_binary_max_min<IS_MAX_OP, true /*IS_FP16A*/, 8 /*ITERATIONS*/>,
-                params.DST_INDEX,
-                /* dst_index_in0 */ 0U,
-                /* dst_index_in1 */ 1U,
-                /* dst_index_out */ 2U);
-        }
-        else
-        {
-            _llk_math_eltwise_unary_sfpu_params_(
-                ckernel::sfpu::calculate_binary_max_min<IS_MAX_OP, false /*IS_FP16A*/, 8 /*ITERATIONS*/>,
-                params.DST_INDEX,
-                /* dst_index_in0 */ 0U,
-                /* dst_index_in1 */ 1U,
-                /* dst_index_out */ 2U);
-        }
+        _llk_math_eltwise_unary_sfpu_params_(
+            ckernel::sfpu::calculate_binary_max_min<IS_MAX_OP, 8 /*ITERATIONS*/>,
+            params.DST_INDEX,
+            /* dst_index_in0 */ 0U,
+            /* dst_index_in1 */ 1U,
+            /* dst_index_out */ 2U);
     }
 
     _llk_math_set_dvalid_<p_cleardvalid::SFPU, dest_sync>();

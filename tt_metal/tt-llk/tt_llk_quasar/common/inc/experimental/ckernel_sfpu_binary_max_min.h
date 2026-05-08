@@ -39,25 +39,50 @@ inline void binary_max_min_int32_init()
 // Float variant — inner row body.
 // Loads two FP rows from separate Dest tile regions, computes element-wise
 // min+max via SFPSWAP(mod1=1), then stores the result for IS_MAX_OP.
-// IS_FP16A: set to true when the Dest format is IEEE Float16 (FP16A, 5-bit exponent).
-// In 16-bit SFPU mode with DEFAULT load, Float16A values are not expanded to proper FP32
-// in LREG, causing SFPSWAP sign-magnitude comparison to fail for negative pairs.
-// Explicitly using FP16A mode fixes this by ensuring correct FP16A→FP32 expansion.
+//
+// SFPLOAD/SFPSTORE use sfpmem::DEFAULT (MOD0_FMT_SRCB) — SFPLOAD resolves it
+// at runtime via ALU_ACC_CTRL_SFPU_Fp32_enabled and the SrcB format register,
+// both of which the unpacker / _llk_math_srcAB_hw_configure_ already program
+// from formats.math. So DEFAULT lands on FP16A / FP16B / FP32 to match Dst.
+//
+// CC-guarded correction swap: SFPSWAP_VEC_MIN_MAX on Quasar uses an unsigned
+// 32-bit compare on the LReg bits instead of the documented sign-magnitude
+// (SignMagIsSmaller) compare. For (neg, neg) pairs that inverts the ordering —
+// the same bug the int32 variant works around below. Sign-magnitude FP32 in
+// LReg has bit 31 = sign just like INT32, so the same SFPSETCC-on-LT0 trick
+// applies: detect rows where both LRegs are negative and re-swap them.
 //
 // @param offset0    Base Dest address (in 16b units) of the in0 tile region.
 // @param offset1    Base Dest address (in 16b units) of the in1 tile region.
 // @param offset2    Base Dest address (in 16b units) of the output tile region.
 // @param row_index  Row index within the tile [0, ITERATIONS); selects which of the 32-lane SFPU rows to process.
-template <bool IS_MAX_OP = true, bool IS_FP16A = false>
+template <bool IS_MAX_OP = true>
 inline void _calculate_binary_max_min_sfp_rows_(const std::uint32_t offset0, const std::uint32_t offset1, const std::uint32_t offset2, const int row_index)
 {
-    constexpr std::uint32_t load_mode = IS_FP16A ? p_sfpu::sfpmem::FP16A : p_sfpu::sfpmem::DEFAULT;
-    TT_SFPLOAD(p_sfpu::LREG0, load_mode, ADDR_MOD_7, 0 /* done */, offset0 + (row_index << 1)); // load FP row from in0
-    TT_SFPLOAD(p_sfpu::LREG1, load_mode, ADDR_MOD_7, 0 /* done */, offset1 + (row_index << 1)); // load FP row from in1
-    // VEC_MIN_MAX: VD=LREG0 → min, VC=LREG1 → max (sign-magnitude order = FP32 total order)
-    TTI_SFPSWAP(0 /* imm12 */, p_sfpu::LREG1, p_sfpu::LREG0, sfpi::SFPSWAP_MOD1_VEC_MIN_MAX);                                // 2-cycle; LREG0=min, LREG1=max
-    TTI_SFPNOP(0 /* srcs_wr_done */, 0 /* srcs_rd_done */, 0 /* dest_done */);                                               // post-SFPSWAP stall avoidance
-    TT_SFPSTORE(IS_MAX_OP ? p_sfpu::LREG1 : p_sfpu::LREG0, load_mode, ADDR_MOD_7, 0 /* done */, offset2 + (row_index << 1)); // store max (LREG1) or min (LREG0)
+    TT_SFPLOAD(p_sfpu::LREG0, p_sfpu::sfpmem::DEFAULT, ADDR_MOD_7, 0 /* done */, offset0 + (row_index << 1)); // load FP row from in0
+    TT_SFPLOAD(p_sfpu::LREG1, p_sfpu::sfpmem::DEFAULT, ADDR_MOD_7, 0 /* done */, offset1 + (row_index << 1)); // load FP row from in1
+
+    // Step 1: SM-min/SM-max via SFPSWAP. Correct for any pair where at least one
+    // operand is non-negative; inverts ordering for (neg, neg) pairs.
+    TTI_SFPSWAP(0 /* imm12 */, p_sfpu::LREG1, p_sfpu::LREG0, sfpi::SFPSWAP_MOD1_VEC_MIN_MAX); // 2-cycle
+    TTI_SFPNOP(0 /* srcs_wr_done */, 0 /* srcs_rd_done */, 0 /* dest_done */);                // post-SFPSWAP stall avoidance
+
+    // Step 2: CC-guarded correction swap for (neg, neg) pairs. SFPSETCC with
+    // imm12=SFPSETCC_INT32_SIGNBIT interprets the LReg as INT32 and tests bit 31,
+    // which is the sign bit for both INT32 SM and FP32 SM. Successive SFPSETCC
+    // calls AND into CC, so after both we have CC = (LREG0<0 AND LREG1<0).
+    TTI_SFPSETCC(SFPSETCC_INT32_SIGNBIT, p_sfpu::LREG0, sfpi::SFPSETCC_MOD1_LREG_LT0);
+    TTI_SFPSETCC(SFPSETCC_INT32_SIGNBIT, p_sfpu::LREG1, sfpi::SFPSETCC_MOD1_LREG_LT0);
+    TTI_SFPSWAP(0 /* imm12 */, p_sfpu::LREG1, p_sfpu::LREG0, sfpi::SFPSWAP_MOD1_SWAP); // re-swap rows where both operands are negative
+    TTI_SFPENCC(0 /* imm12 */, 0 /* mod1: clear CC */);
+
+    // After step 2: LREG0 = min, LREG1 = max for all sign combinations.
+    TT_SFPSTORE(
+        IS_MAX_OP ? p_sfpu::LREG1 : p_sfpu::LREG0,
+        p_sfpu::sfpmem::DEFAULT,
+        ADDR_MOD_7,
+        0 /* done */,
+        offset2 + (row_index << 1)); // store max (LREG1) or min (LREG0)
 }
 
 // Float variant — outer loop.
@@ -67,7 +92,7 @@ inline void _calculate_binary_max_min_sfp_rows_(const std::uint32_t offset0, con
 // @param dst_index_in0  Dest tile index of input 0 (in tile units).
 // @param dst_index_in1  Dest tile index of input 1 (in tile units).
 // @param dst_index_out  Dest tile index where the result tile is written (in tile units).
-template <bool IS_MAX_OP = true, bool IS_FP16A = false, int ITERATIONS = 8>
+template <bool IS_MAX_OP = true, int ITERATIONS = 8>
 inline void calculate_binary_max_min(const std::uint32_t dst_index_in0, const std::uint32_t dst_index_in1, const std::uint32_t dst_index_out)
 {
     const std::uint32_t offset0 = (dst_index_in0 * 32) << 1;
@@ -76,7 +101,7 @@ inline void calculate_binary_max_min(const std::uint32_t dst_index_in0, const st
 #pragma GCC unroll 8
     for (int row_index = 0; row_index < ITERATIONS; row_index++)
     {
-        _calculate_binary_max_min_sfp_rows_<IS_MAX_OP, IS_FP16A>(offset0, offset1, offset2, row_index);
+        _calculate_binary_max_min_sfp_rows_<IS_MAX_OP>(offset0, offset1, offset2, row_index);
     }
 }
 
