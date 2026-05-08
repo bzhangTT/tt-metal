@@ -140,7 +140,7 @@ ALWI void leaky_relu_tile(uint32_t idst, uint32_t slope = 0) {
     MATH(SFPU_UNARY_ONE_PARAM_KERNEL_FN(calculate_lrelu, RC, APPROX, idst, slope));
 }
 
-ALWI void leaky_relu_tile(uint32_t idst_in, uint32_t idst_out, uint32_t slope = 0) {
+ALWI void leaky_relu_tile(uint32_t idst_in, uint32_t idst_out, uint32_t slope) {
     MATH((_llk_math_eltwise_unary_sfpu_params_(
         ckernel::sfpu::calculate_lrelu<APPROX>, idst_in, idst_out, (int)VectorMode::RC, slope)));
 }
