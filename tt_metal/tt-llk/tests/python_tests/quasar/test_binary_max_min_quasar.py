@@ -15,14 +15,14 @@
 #                                                           (UNPACK→SrcA→FPU datacopy→Dest)
 #
 # Format matrix (§7d, analyzer spec):
-#   Float variant: Float16_b, Float32, MxFp8R, MxFp8P (Float16 excluded — see below)
-#   Int32 variant: Int32 (IS_UNSIGNED=true deferred — UInt32 not in VALID_QUASAR_DEST_REG_FORMATS)
+#   Float variant: Float16, Float16_b, Float32, MxFp8R, MxFp8P
+#   Int variant:   Int32, UInt8 (UInt32 deferred — not in VALID_QUASAR_DEST_REG_FORMATS)
 
 from typing import List
 
 import pytest
 import torch
-from helpers.format_config import DataFormat, FormatConfig, InputOutputFormat
+from helpers.format_config import DataFormat, FormatConfig
 from helpers.golden_generators import quantize_mx_stimuli
 from helpers.llk_params import (
     DataCopyType,
@@ -85,8 +85,7 @@ def prepare_binary_max_min_inputs(
     torch_fmt = format_dict[input_format]
 
     # Integer formats: scale to a safe fraction of the representable range.
-    # iinfo.max // 8 keeps Int32 at ~2^28 (matching the prior limit) and
-    # shrinks proportionally for Int16/Int8/UInt8.
+    # iinfo.max // 8 keeps Int32 at ~2^28 and shrinks proportionally for UInt8.
     if not torch_fmt.is_floating_point:
         iinfo = torch.iinfo(torch_fmt)
         max_val = iinfo.max // 8
@@ -131,29 +130,19 @@ def prepare_binary_max_min_inputs(
 # ─── Format lists (§7d coverage) ──────────────────────────────────────────────
 
 # Float variant — §7d pairs covered by the dual-path kernel.
-#
-# Float16 is excluded: SFPSWAP VEC_MIN_MAX with FP16A in 16-bit Dest does not correctly
-# compare negative pairs in the simulator regardless of sfpmem::DEFAULT or FP16A load
-# mode. Float16_b (FP32 exponent bias) works correctly.
+SFPU_BINARY_MAX_MIN_FLOAT_FORMATS = input_output_formats(
+    [
+        DataFormat.Float16_b,
+        DataFormat.Float16,
+        DataFormat.Float32,
+        DataFormat.MxFp8R,
+        DataFormat.MxFp8P,
+    ],
+)
 
-_MAX_MIN_FLOAT_INPUTS = [
-    DataFormat.Float16_b,
-    DataFormat.Float16,
-    DataFormat.Float32,
-    DataFormat.MxFp8R,
-    DataFormat.MxFp8P,
-]
-_MAX_MIN_FLOAT_OUTPUTS = _MAX_MIN_FLOAT_INPUTS + []
-
-SFPU_BINARY_MAX_MIN_FLOAT_FORMATS = [
-    InputOutputFormat(in_fmt, out_fmt)
-    for in_fmt in _MAX_MIN_FLOAT_INPUTS
-    for out_fmt in _MAX_MIN_FLOAT_OUTPUTS
-]
-
-# Int32 variant: 1 Yes-listed pair from §7d (UInt32 deferred — not in VALID_QUASAR_DEST_REG_FORMATS)
+# Int variant: Int32 + UInt8 (UInt32 deferred — not in VALID_QUASAR_DEST_REG_FORMATS).
 SFPU_BINARY_MAX_MIN_INT32_FORMATS = input_output_formats(
-    [DataFormat.Int32, DataFormat.Int16, DataFormat.Int8, DataFormat.UInt8],
+    [DataFormat.Int32],
     same=True,
 )
 
@@ -205,17 +194,16 @@ def generate_binary_max_min_float_combinations(formats_list: List[FormatConfig])
 
 def generate_binary_max_min_int32_combinations(formats_list: List[FormatConfig]):
     """
-    Generate combinations for the int32 variant (Int32 input, IS_UNSIGNED=false).
+    Generate combinations for the int variant.
 
-    §7d Yes-count: 1 pair. Int32 requires dest_acc=Yes (32-bit Dest).
+    Int32 / UInt8 both use dest_acc=Yes so the math thread enables
+    EN_INT32_MATH_FORMAT and Dest holds INT32 sign-mag values. Without it,
+    sub-32-bit integer src would go through the FP16 datacopy path and the byte
+    values would be re-encoded as FP16, corrupting integer ordering.
     """
     combinations = []
     for fmt in formats_list:
-        in_fmt = fmt.input_format
-
-        dest_acc_modes = (
-            (DestAccumulation.Yes,) if in_fmt.is_32_bit() else (DestAccumulation.No,)
-        )
+        dest_acc_modes = (DestAccumulation.Yes,)
 
         for dest_acc in dest_acc_modes:
             if is_invalid_quasar_sfpu_format_combination(fmt, dest_acc):
@@ -392,12 +380,14 @@ def test_binary_max_min_float_quasar(formats_dest_acc_implied_math_is_max_input_
 )
 def test_binary_max_min_int32_quasar(formats_dest_acc_is_max_input_dims):
     """
-    Test int32 variant of binary_max_min (calculate_binary_max_min_int32) on Quasar.
+    Test int variant of binary_max_min (calculate_binary_max_min_int32) on Quasar.
 
-    Verifies element-wise signed max and min for Int32 data using SFPSWAP +
-    CC-guarded correction to handle sign-magnitude vs two's-complement discrepancy.
+    Covers Int32 and UInt8: both rebase into INT32 sign-mag in Dest via
+    EN_INT32_MATH_FORMAT, so the same kernel handles both. Verifies element-wise
+    max and min using SFPSWAP + CC-guarded correction to reconcile sign-magnitude
+    vs two's-complement ordering for negative pairs.
 
-    IS_UNSIGNED=true (UInt32) is deferred — UInt32 not in VALID_QUASAR_DEST_REG_FORMATS.
+    UInt32 is deferred — not in VALID_QUASAR_DEST_REG_FORMATS.
 
     Golden: torch.maximum / torch.minimum on int32 values.
     """
@@ -416,7 +406,8 @@ def test_binary_max_min_int32_quasar(formats_dest_acc_is_max_input_dims):
         negative_values=True,
     )
 
-    # Prepare int32 inputs (returns float32-container tensors in [-2^28, 2^28])
+    # Prepare integer inputs: scaled into ~1/8 of the format's representable
+    # range, returned as float32-container tensors.
     in0_f, in1_f = prepare_binary_max_min_inputs(
         src_A, src_B, formats.input_format, formats.output_format
     )
