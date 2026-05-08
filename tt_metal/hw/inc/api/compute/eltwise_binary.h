@@ -244,11 +244,27 @@ ALWI void binary_dest_reuse_tiles_init(uint32_t icb0, uint32_t call_line = __bui
         constexpr bool acc_to_dest = false;
     #endif
     UNPACK((llk_unpack_A_init<BroadcastType::NONE, acc_to_dest, binary_reuse_dest>(false, false, icb0)));
+#ifndef ARCH_QUASAR
     if constexpr (eltwise_binary_type == EltwiseBinaryType::ELWMUL) {
         MATH((llk_math_eltwise_binary_init<eltwise_binary_type, BroadcastType::NONE, MATH_FIDELITY, binary_reuse_dest>(false)));
     } else {
         MATH((llk_math_eltwise_binary_init<eltwise_binary_type, BroadcastType::NONE, MathFidelity::LoFi, binary_reuse_dest>(false)));
     }
+#else
+    if constexpr (eltwise_binary_type == EltwiseBinaryType::ELWMUL) {
+        MATH((llk_math_eltwise_binary_dest_reuse_tiles_init<
+              eltwise_binary_type,
+              BroadcastType::NONE,
+              MATH_FIDELITY,
+              binary_reuse_dest>(icb0, false)));
+    } else {
+        MATH((llk_math_eltwise_binary_dest_reuse_tiles_init<
+              eltwise_binary_type,
+              BroadcastType::NONE,
+              MathFidelity::LoFi,
+              binary_reuse_dest>(icb0, false)));
+    }
+#endif
 }
 
 // clang-format off

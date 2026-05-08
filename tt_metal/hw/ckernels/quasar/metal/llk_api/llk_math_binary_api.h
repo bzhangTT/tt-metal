@@ -27,9 +27,14 @@ template <
     BroadcastType src_b_bcast_type,
     MathFidelity math_fidelity,
     EltwiseBinaryReuseDestType binary_reuse_dest = EltwiseBinaryReuseDestType::NONE>
-inline void llk_math_eltwise_binary_init(bool acc_to_dest = false) {
+inline void llk_math_eltwise_binary_dest_reuse_tiles_init(const std::uint32_t operand_A, const bool acc_to_dest = false) {
     static_assert(src_b_bcast_type == BroadcastType::NONE, "Broadcast types will be added in a future update");
 
+    const std::uint32_t operandA_id = get_operand_id(operand_A);
+    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operandA_id);
+    const DataFormat src_format = static_cast<DataFormat>(get_operand_dst_format(operandA_id));
+
+    _configure_default_data_format_state_<false /* IMPLIED_MATH_FORMAT */, DST_ACCUM_MODE>(src_format, src_format);
     _llk_math_eltwise_binary_init_<eltwise_binary_type, math_fidelity, binary_reuse_dest>(
         ckernel::DEFAULT_TENSOR_SHAPE, acc_to_dest);
 }
