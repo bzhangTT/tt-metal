@@ -404,7 +404,11 @@ Conv2dShardedProgramFactory::cached_program_t Conv2dShardedProgramFactory::creat
         out_block_h_ntiles);
 
     const uint32_t num_blocks_act_h = act_matrix_height_ntiles / act_block_h_ntiles;
-    const uint32_t num_blocks_act_w = slice_inner_dim ? filter_h : 1;
+    // 1D depthwise splits the inner accumulation dim into one block per kernel tap (filter_h * filter_w).
+    // For the canonical 1D depthwise case kernel_height == 1, so this collapses to filter_w. Keeping the
+    // product expression covers both H- and W-axis 1D depthwise convs symmetrically.
+    const uint32_t num_blocks_act_w =
+        is_conv_1d_depthwise_conv ? filter_h * filter_w : (slice_inner_dim ? filter_h : 1);
     const uint32_t num_blocks_weight_w = weight_matrix_width_ntiles / weight_block_w_ntiles;
 
     // act block info
@@ -430,9 +434,11 @@ Conv2dShardedProgramFactory::cached_program_t Conv2dShardedProgramFactory::creat
         weight_block_w_ntiles,
         out_subblock_w_ntiles);
     uint32_t weight_num_subblocks = weight_block_w_ntiles / out_subblock_w_ntiles;
-    // For 1D depthwise conv, weight_block_h_ntiles must accommodate inner_dim = act_block_h_ntiles * TILE_HEIGHT *
-    // kernel_w. So weight_block_h_ntiles = act_block_h_ntiles * kernel_w (filter_w).
-    uint32_t weight_block_h_ntiles = is_conv_1d_depthwise_conv ? act_block_h_ntiles * filter_w : act_block_w_ntiles;
+    // For 1D depthwise, each kernel tap is fed as a separate weight block (num_blocks_weight_h ==
+    // filter_h * filter_w). So weight_block_h_ntiles is the per-tap height (act_block_h_ntiles), not
+    // multiplied by filter_w. The weight prep helper stacks the taps along the broadcast dim so that
+    // total weight tile rows == filter_h * filter_w * act_block_h_ntiles.
+    uint32_t weight_block_h_ntiles = is_conv_1d_depthwise_conv ? act_block_h_ntiles : act_block_w_ntiles;
     uint32_t weight_block_num_tiles = weight_block_w_ntiles * weight_block_h_ntiles;
 
     // writer of conv op partially removes padding on the width
@@ -734,9 +740,13 @@ Conv2dShardedProgramFactory::cached_program_t Conv2dShardedProgramFactory::creat
 
     const tt::tt_metal::CBHandle cb_sharded_act = get_cb_info_by_name(cb_info, Conv2dCb::ACT_SHARDED).handle;
     const tt::tt_metal::CBHandle cb_output = get_cb_info_by_name(cb_info, Conv2dCb::OUT).handle;
-    const bool partials_cb_uses_output = get_cb_info_by_name(cb_info, Conv2dCb::MATMUL_PARTIALS).is_globally_allocated;
+    // 1D depthwise compute uses dest-reuse for accumulation — no MATMUL_PARTIALS CB is allocated.
+    const bool partials_cb_uses_output =
+        !is_conv_1d_depthwise_conv && get_cb_info_by_name(cb_info, Conv2dCb::MATMUL_PARTIALS).is_globally_allocated;
     log_debug(tt::LogOp, "partials_cb_uses_output: {}", partials_cb_uses_output);
-    const tt::tt_metal::CBHandle cb_partials = get_cb_info_by_name(cb_info, Conv2dCb::MATMUL_PARTIALS).handle;
+    const tt::tt_metal::CBHandle cb_partials = is_conv_1d_depthwise_conv
+                                                   ? tt::tt_metal::CBHandle{}
+                                                   : get_cb_info_by_name(cb_info, Conv2dCb::MATMUL_PARTIALS).handle;
 
     std::string reader_kernel;
     std::string compute_kernel = "ttnn/cpp/ttnn/operations/conv/conv2d/device/kernels/conv_bmm_tilize.cpp";
@@ -1002,60 +1012,79 @@ Conv2dShardedProgramFactory::cached_program_t Conv2dShardedProgramFactory::creat
 
     const bool check_skip_compute = input_cores != output_cores;
 
-    std::vector<uint32_t> compute_kernel_args = {
-        act_block_w_ntiles,
-        act_num_subblocks,
-        act_block_num_tiles,
-        act_subblock_num_tiles,
-        enable_split_reader ? act_block_h_ntiles : act_subblock_h_ntiles * act_num_subblocks,  // reader_num_h_subblocks
-        weight_num_subblocks,
-        weight_block_num_tiles,
-        weight_block_w_ntiles,
-
-        num_blocks_act_h_per_core,
-        in0_num_blocks_w,
-        num_blocks_weight_w_per_core,
-
-        out_subblock_h_ntiles,
-        out_subblock_w_ntiles,
-        out_subblock_num_tiles,
-
-        height_sharded,
-        untilize_out,
-
-        bias_ntiles_per_core,
-
-        get_cb_info_by_name(cb_info, Conv2dCb::BIAS).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::ACT).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::WEIGHTS).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::ACT_ROW_MAJOR_BFLOAT16).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::ACT_SECOND_READER).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::MATMUL_PARTIALS).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::ACT_TILIZED).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::OUT).index,
-        get_cb_info_by_name(cb_info, Conv2dCb::TEMP_SUM).index,
-        partials_cb_uses_output,
-        conv_act_c_blocks,
-        check_skip_compute,
-        pack_relu,
-        weight_block_w_ntiles <= 8,  // packer_untilize
-        packer_l1_acc_en,
-        has_bias,
-        enable_split_reader,
-        enable_activation_reuse};
-
-    if (enable_activation_reuse) {
-        compute_kernel_args.push_back(activation_reuse_config.image_width_tiles);
-        compute_kernel_args.push_back(activation_reuse_config.reuse_window_offset / COMPUTE_KERNEL_ADDRESS_DIVISOR);
-        compute_kernel_args.push_back(activation_reuse_config.tilized_cb_row_offset / COMPUTE_KERNEL_ADDRESS_DIVISOR);
-        compute_kernel_args.push_back(
-            activation_reuse_config.tilized_cb_second_reader_offset / COMPUTE_KERNEL_ADDRESS_DIVISOR);
+    std::vector<uint32_t> compute_kernel_args;
+    if (is_conv_1d_depthwise_conv) {
+        // compute_depthwise_conv1d.cpp uses dest-reuse accumulation; it only reads activation
+        // sizing, the in0/in1/tilized/out CB indices, and a tilize toggle. Keep this list tight
+        // — the kernel reads positions 0..5 only.
+        compute_kernel_args = {
+            act_block_w_ntiles,                                         // 0: in0_block_w
+            act_num_subblocks,                                          // 1: in0_num_subblocks
+            act_block_num_tiles,                                        // 2: in0_block_num_tiles
+            num_blocks_act_h_per_core,                                  // 3: in0_num_blocks_h
+            in0_num_blocks_w,                                           // 4: in0_num_blocks_w
+            get_cb_info_by_name(cb_info, Conv2dCb::ACT).index,          // 5: in0_cb_id (raw RM)
+            get_cb_info_by_name(cb_info, Conv2dCb::WEIGHTS).index,      // 6: in1_cb_id
+            get_cb_info_by_name(cb_info, Conv2dCb::ACT_TILIZED).index,  // 7: tilized_in0_cb_id
+            get_cb_info_by_name(cb_info, Conv2dCb::OUT).index,          // 8: out_cb_id
+        };
     } else {
-        std::vector<uint32_t> activation_reuse_dummy_args = {0, 0, 0, 0};
-        compute_kernel_args.insert(
-            compute_kernel_args.end(), activation_reuse_dummy_args.begin(), activation_reuse_dummy_args.end());
+        compute_kernel_args = {
+            act_block_w_ntiles,
+            act_num_subblocks,
+            act_block_num_tiles,
+            act_subblock_num_tiles,
+            enable_split_reader ? act_block_h_ntiles
+                                : act_subblock_h_ntiles * act_num_subblocks,  // reader_num_h_subblocks
+            weight_num_subblocks,
+            weight_block_num_tiles,
+            weight_block_w_ntiles,
+
+            num_blocks_act_h_per_core,
+            in0_num_blocks_w,
+            num_blocks_weight_w_per_core,
+
+            out_subblock_h_ntiles,
+            out_subblock_w_ntiles,
+            out_subblock_num_tiles,
+
+            height_sharded,
+            untilize_out,
+
+            bias_ntiles_per_core,
+
+            get_cb_info_by_name(cb_info, Conv2dCb::BIAS).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::ACT).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::WEIGHTS).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::ACT_ROW_MAJOR_BFLOAT16).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::ACT_SECOND_READER).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::MATMUL_PARTIALS).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::ACT_TILIZED).index,
+            get_cb_info_by_name(cb_info, Conv2dCb::OUT).index,
+            partials_cb_uses_output,
+            conv_act_c_blocks,
+            check_skip_compute,
+            pack_relu,
+            weight_block_w_ntiles <= 8,  // packer_untilize
+            packer_l1_acc_en,
+            has_bias,
+            enable_split_reader,
+            enable_activation_reuse};
+
+        if (enable_activation_reuse) {
+            compute_kernel_args.push_back(activation_reuse_config.image_width_tiles);
+            compute_kernel_args.push_back(activation_reuse_config.reuse_window_offset / COMPUTE_KERNEL_ADDRESS_DIVISOR);
+            compute_kernel_args.push_back(
+                activation_reuse_config.tilized_cb_row_offset / COMPUTE_KERNEL_ADDRESS_DIVISOR);
+            compute_kernel_args.push_back(
+                activation_reuse_config.tilized_cb_second_reader_offset / COMPUTE_KERNEL_ADDRESS_DIVISOR);
+        } else {
+            std::vector<uint32_t> activation_reuse_dummy_args = {0, 0, 0, 0};
+            compute_kernel_args.insert(
+                compute_kernel_args.end(), activation_reuse_dummy_args.begin(), activation_reuse_dummy_args.end());
+        }
+        compute_kernel_args.push_back(static_cast<uint32_t>(split_reader_cb_shared));
     }
-    compute_kernel_args.push_back(static_cast<uint32_t>(split_reader_cb_shared));
 
     const tt::tt_metal::NOC writer_mcast_noc = tt::tt_metal::detail::preferred_noc_for_dram_read(device->arch());
     const tt::tt_metal::NOC reader_noc =

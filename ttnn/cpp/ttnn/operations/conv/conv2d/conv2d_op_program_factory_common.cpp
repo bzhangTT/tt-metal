@@ -175,10 +175,12 @@ std::vector<CBInfo> get_cb_info(
 
     {
         // Weights CB
-        // For 1D depthwise conv, the weight matrix inner dimension is act_block_h_ntiles * kernel_w,
-        // not act_block_w_ntiles (which is just padded_in_channels for depthwise).
+        // For 1D depthwise conv, each kernel tap is fed as a separate weight block (see
+        // num_blocks_act_w in conv2d_op_sharded_program_factory). The weights CB only holds a
+        // single tap at a time (act_block_h_ntiles inner-dim) — full kernel-window inner dim would
+        // waste L1 and trip the static-CB-vs-L1-buffer overlap check for large channels.
         uint32_t weight_inner_dim_ntiles =
-            is_1d_depthwise_conv ? block_config.act_block_h_ntiles * kernel_size[1] : block_config.act_block_w_ntiles;
+            is_1d_depthwise_conv ? block_config.act_block_h_ntiles : block_config.act_block_w_ntiles;
         uint32_t weight_block_num_tiles = per_core_out_matrix_width_ntiles * weight_inner_dim_ntiles;
         if (sharding_scheme == TensorMemoryLayout::HEIGHT_SHARDED) {
             // If activation reuse is enabled, we already have full inner dim
@@ -201,10 +203,11 @@ std::vector<CBInfo> get_cb_info(
             .data_format = weights_df});
     }
 
-    // Matmul partials CB
+    // Matmul partials CB. 1D depthwise compute uses dest-reuse accumulation, so the CB is unused
+    // for that path — emit a 0-page entry so allocate_cbs skips the device allocation.
     cb_info.emplace_back(CBInfo{
         .name = Conv2dCb::MATMUL_PARTIALS,
-        .num_pages = is_1d_depthwise_conv ? 1 : per_core_out_ntiles,
+        .num_pages = is_1d_depthwise_conv ? 0 : per_core_out_ntiles,
         .page_size = partial_tile_size,
         .is_globally_allocated = (!untilize_out && partial_dtype == output_datatype && !is_1d_depthwise_conv),
         .data_format = partial_df});
@@ -246,13 +249,6 @@ std::vector<CBInfo> get_cb_info(
             .page_size = input_tile_size,
             .data_format = conv_input_df});
     }
-
-    // Temp sum CB (1d depthwise conv only)
-    cb_info.emplace_back(CBInfo{
-        .name = Conv2dCb::TEMP_SUM,
-        .num_pages = is_1d_depthwise_conv ? 1 : 0,
-        .page_size = output_tile_size,
-        .data_format = output_df});
 
     // Tilized act CB
     cb_info.emplace_back(CBInfo{

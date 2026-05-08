@@ -55,15 +55,12 @@ void kernel_main() {
 
     uint32_t reader_idx = 0;
 
-    // TODO: need to make the read coalescing optimization cleaner
-    // pass coalesce_window_inner_reads as a compile time arg and num_coalesced_reads so we can constexpr the if
-    // currently works for the case of num_coalesced_reads == weight_size_w since these reads are contiguous on both
-    // src/dst side we check if window_inner == weight_size_w to make sure coalescing is legal along full window_inner
-    // so the loop can be removed
-    constexpr uint32_t num_coalesced_reads = weight_size_w;
+    // The host emits one CB block per kernel tap (window_outer == filter_h * filter_w), so each
+    // per-stride read fetches a single channel-stick — no coalescing across kernel taps. Restoring
+    // the original kw-coalescing requires the bigger redesign (one big block + kw mul-add per
+    // output tile in compute) which is tracked separately.
+    constexpr uint32_t num_coalesced_reads = 1;
     constexpr uint32_t coalesced_read_bytes = num_coalesced_reads * conv_act_c_read_bytes;
-    // the conditional selecting between coalescing and no-colescing must be constexpr to that compiler can optimized
-    // the other path away this has shown to be a big perf win
     reader_offset_idx = 0;
     uint32_t act_l1_offset = 0;
     uint32_t act_l1_read_addr = sharded_act_cb.get_read_ptr();
@@ -92,7 +89,7 @@ void kernel_main() {
 
                 for (uint16_t ind = start_ind; ind <= end_ind; ind += stride_w) {
                     act_l1_offset = reader_offset + (ind * conv_act_c_read_bytes);
-                    experimental::read_with_state(noc, l1_write_addr_act, act_l1_offset);
+                    experimental::read_with_state<coalesced_read_bytes>(noc, l1_write_addr_act, act_l1_offset);
                     l1_write_addr_act += (coalesced_read_bytes + act_block_w_extra_align_bytes);
                 }
             }
