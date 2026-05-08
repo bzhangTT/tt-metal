@@ -547,7 +547,7 @@ private:
         // order. We should use transaction IDs instead in that case.
         if (released_prev_block_) {
             WAYPOINT("CBRW");
-            while (!noc_nonposted_writes_sent_at_count(noc_index, this->block_noc_writes_to_clear_));
+            while (!noc_nonposted_writes_sent_at_count(noc_index, this->block_noc_writes_to_clear_)); //TODO: telemetry blocking loop maybe?
             ReleasePolicy::template release<noc_idx, noc_xy, sem_id>(cb_pages_per_block);
             WAYPOINT("CBRD");
         } else {

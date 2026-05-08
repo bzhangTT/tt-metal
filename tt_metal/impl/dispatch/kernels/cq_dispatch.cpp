@@ -156,6 +156,7 @@ using RelayClientType =
 RelayClientType relay_client;
 
 constexpr uint32_t dispatch_telemetry_base = MEM_DISPATCH_TELEMETRY_REGION_BASE;
+constexpr bool telemetry_enabled = true; // TODO: make this a compile-time option
 
 using DispatchTelemetry = tt::tt_metal::DispatchTelemetry;
 
@@ -163,6 +164,47 @@ FORCE_INLINE
 volatile tt_l1_ptr DispatchTelemetry* get_dispatch_telemetry_ptr() {
     return reinterpret_cast<volatile tt_l1_ptr DispatchTelemetry*>(dispatch_telemetry_base);
 }
+
+template <bool enabled>
+class DispatchTelemetryBlockGuardImpl;
+
+template <>
+class DispatchTelemetryBlockGuardImpl<true> {
+public:
+    FORCE_INLINE DispatchTelemetryBlockGuardImpl() = default;
+
+    FORCE_INLINE ~DispatchTelemetryBlockGuardImpl() {
+        if (blocked_) {
+            get_dispatch_telemetry_ptr()->unblocked_count++;
+        }
+    }
+
+    DispatchTelemetryBlockGuardImpl(const DispatchTelemetryBlockGuardImpl&) = delete;
+    DispatchTelemetryBlockGuardImpl& operator=(const DispatchTelemetryBlockGuardImpl&) = delete;
+    DispatchTelemetryBlockGuardImpl(DispatchTelemetryBlockGuardImpl&& other) = delete;
+    DispatchTelemetryBlockGuardImpl& operator=(DispatchTelemetryBlockGuardImpl&& other) = delete;
+
+    FORCE_INLINE void mark_blocked() {
+        if (!blocked_) {
+            get_dispatch_telemetry_ptr()->blocked_count++;
+            blocked_ = true;
+        }
+    }
+
+private:
+    bool blocked_ {false};
+};
+
+template <>
+class DispatchTelemetryBlockGuardImpl<false> {
+public:
+    // FORCE_INLINE should allow the compiler to erase this guard when telemetry is disabled.
+    FORCE_INLINE DispatchTelemetryBlockGuardImpl() = default;
+    FORCE_INLINE ~DispatchTelemetryBlockGuardImpl() = default;
+    FORCE_INLINE void mark_blocked() {}
+};
+
+using DispatchTelemetryBlockGuard = DispatchTelemetryBlockGuardImpl<telemetry_enabled>;
 
 // TODO: Move inits to host
 FORCE_INLINE
@@ -206,6 +248,20 @@ using CBReaderType = CBReaderWithReleasePolicy<
     DispatchReleasePolicy>;
 
 static CBReaderType dispatch_cb_reader;
+
+FORCE_INLINE
+uint32_t wait_for_available_dispatch_data(uint32_t& data_ptr) {
+    DispatchTelemetryBlockGuard telemetry_blocked;
+
+    if constexpr (telemetry_enabled) {
+        // wait_for_available_data_and_release_old_pages blocks if there is no data available.
+        if (dispatch_cb_reader.available_bytes(data_ptr) == 0) {
+            telemetry_blocked.mark_blocked();
+        }
+    }
+
+    return dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
+}
 
 constexpr uint32_t packed_write_max_multicast_sub_cmds =
     get_packed_write_max_multicast_sub_cmds(packed_write_max_unicast_sub_cmds);
@@ -267,24 +323,31 @@ void completion_queue_reserve_back(uint32_t num_pages) {
     uint32_t completion_rd_ptr;
     uint32_t completion_rd_toggle;
     uint32_t available_space;
-    get_dispatch_telemetry_ptr()->blocked_count++;
-    // DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", get_dispatch_telemetry_ptr()->blocked_count);
-    do {
-        invalidate_l1_cache();
-        completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr(); // TODO: blocking
-        completion_rd_ptr = completion_rd_ptr_and_toggle & 0x7fffffff;
-        completion_rd_toggle = completion_rd_ptr_and_toggle >> 31;
-        // Toggles not equal means write ptr has wrapped but read ptr has not
-        // so available space is distance from write ptr to read ptr
-        // Toggles are equal means write ptr is ahead of read ptr
-        // so available space is total space minus the distance from read to write ptr
-        available_space =
-            completion_rd_toggle != cq_write_interface.completion_fifo_wr_toggle
-                ? completion_rd_ptr - cq_write_interface.completion_fifo_wr_ptr
-                : (completion_queue_size_16B - (cq_write_interface.completion_fifo_wr_ptr - completion_rd_ptr));
-    } while (data_size_16B > available_space); // TODO: blocking
-    get_dispatch_telemetry_ptr()->unblocked_count++;
-    // DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", get_dispatch_telemetry_ptr()->unblocked_count);
+
+    {
+        DispatchTelemetryBlockGuard telemetry_blocked;
+        do {
+            invalidate_l1_cache();
+            completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr();
+            completion_rd_ptr = completion_rd_ptr_and_toggle & 0x7fffffff;
+            completion_rd_toggle = completion_rd_ptr_and_toggle >> 31;
+            // Toggles not equal means write ptr has wrapped but read ptr has not
+            // so available space is distance from write ptr to read ptr
+            // Toggles are equal means write ptr is ahead of read ptr
+            // so available space is total space minus the distance from read to write ptr
+            available_space =
+                completion_rd_toggle != cq_write_interface.completion_fifo_wr_toggle
+                    ? completion_rd_ptr - cq_write_interface.completion_fifo_wr_ptr
+                    : (completion_queue_size_16B - (cq_write_interface.completion_fifo_wr_ptr - completion_rd_ptr));
+
+            if constexpr (telemetry_enabled) {
+                if (data_size_16B > available_space) {
+                    telemetry_blocked.mark_blocked();
+                }
+            }
+        } while (data_size_16B > available_space);
+    }
+
     WAYPOINT("QRBD");
 }
 
@@ -350,10 +413,10 @@ void process_write_host_h() {
         wlength -= length;
         while (length != 0) {
             // Get a page if needed
-            uint32_t available_data = dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
+            uint32_t available_data = wait_for_available_dispatch_data(data_ptr);
             uint32_t xfer_size = (length > available_data) ? available_data : length;
             uint32_t npages = (xfer_size + completion_queue_page_size - 1) / completion_queue_page_size;
-            completion_queue_reserve_back(npages); // TODO: blocking
+            completion_queue_reserve_back(npages);
             uint32_t completion_queue_write_addr = cq_write_interface.completion_fifo_wr_ptr << 4;
             // completion_queue_write_addr will never be equal to completion_queue_end_addr due to
             // completion_queue_push_back wrap logic so we don't need to handle this case explicitly to avoid 0 sized
@@ -560,7 +623,7 @@ void process_write_linear(uint32_t num_mcast_dests) {
             }
         }
 #else
-        uint32_t available_data = dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
+        uint32_t available_data = wait_for_available_dispatch_data(data_ptr);
         uint32_t xfer_size = length > available_data ? available_data : length;
 #endif
         cq_noc_async_write_with_state_any_len(data_ptr, dst_addr, xfer_size, num_mcast_dests);
@@ -602,7 +665,7 @@ void process_write_paged() {
 
     while (write_length != 0) {
         // Transfer size is min(remaining_length, data_available_in_cb)
-        uint32_t available_data = dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
+        uint32_t available_data = wait_for_available_dispatch_data(data_ptr);
         uint32_t remaining_page_size = page_size - dst_addr_offset;
         uint32_t xfer_size = remaining_page_size > available_data ? available_data : remaining_page_size;
         // Cap the transfer size to the NOC packet size - use of One Packet NOC API (better performance
@@ -932,7 +995,7 @@ void process_write_packed_large_unicast(uint32_t* l1_cache) {
 
             while (length != 0) {
                 // More data needs to be written, but we've exhausted the CB. Acquire more pages.
-                uint32_t available_data = dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
+                uint32_t available_data = wait_for_available_dispatch_data(data_ptr);
 
                 // Transfer size is min(remaining_length, data_available_in_cb)
                 uint32_t xfer_size = (length > available_data) ? available_data : length;
@@ -947,7 +1010,7 @@ void process_write_packed_large_unicast(uint32_t* l1_cache) {
             // Discard: skip data without issuing NOC write
             uint32_t remaining_length = length;
             while (remaining_length != 0) {
-                uint32_t available_data = dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
+                uint32_t available_data = wait_for_available_dispatch_data(data_ptr);
 
                 uint32_t skip_size = (remaining_length > available_data) ? available_data : remaining_length;
 
@@ -1207,7 +1270,7 @@ re_run_command:
             // DPRINT << "cmd_write_linear_h_host\n";
             // DEVICE_PRINT("cmd_write_linear_h_host\n");
             if (is_h_variant) {
-                process_write_host_h(); // TODO: blocking
+                process_write_host_h();
             } else {
                 process_write_host_d();
             }
@@ -1389,7 +1452,7 @@ static inline bool process_cmd_h(uint32_t& cmd_ptr) {
         case CQ_DISPATCH_CMD_WRITE_LINEAR_H_HOST:
             // DPRINT << "dispatch_h linear_h_host\n";
             // DEVICE_PRINT("dispatch_h linear_h_host\n");
-            process_write_host_h(); // TODO: blocking
+            process_write_host_h();
             break;
 
         case CQ_DISPATCH_CMD_EXEC_BUF_END:
@@ -1577,12 +1640,12 @@ void kernel_main() {
     *get_dispatch_progress_ptr() = dispatch_progress;
 
     while (!done) {
-        dispatch_cb_reader.wait_for_available_data_and_release_old_pages(cmd_ptr); // TODO: blocking
+        wait_for_available_dispatch_data(cmd_ptr);
 
         DeviceZoneScopedN("CQ-DISPATCH");
         IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
 
-        done = is_d_variant ? process_cmd_d(cmd_ptr, l1_cache) : process_cmd_h(cmd_ptr); // TODO: blocking
+        done = is_d_variant ? process_cmd_d(cmd_ptr, l1_cache) : process_cmd_h(cmd_ptr);
 
         // Increment dispatch progress counter and write to L1 memory
         dispatch_progress++;
