@@ -113,10 +113,6 @@ void RingJointSDPADeviceOperation::validate_on_program_cache_miss(
     TT_FATAL(!(L != 0 && args.is_causal), "Causality is enabled only for ring attention");
 
     TT_FATAL(
-        !(args.is_balanced && (N_local / 2) % q_chunk_size != 0),
-        "q_chunk_size must divide half of local q seq_len in balanced case");
-
-    TT_FATAL(
         k_shape[0] == B && v_shape[0] == B && joint_q_shape[0] == B && joint_k_shape[0] == B && joint_v_shape[0] == B,
         "Batch sizes must match. Got Q: {}, K: {}, V: {}, joint_Q: {}, joint_K: {}, joint_V: {}",
         B,

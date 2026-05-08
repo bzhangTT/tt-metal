@@ -413,15 +413,14 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     // log scale
     log_debug(tt::LogOp, "scale: {}", scale_union.f);
 
-    // Enable per-head zigzag for load balancing in balanced causal mode
-    // Requires even num_q_chunks for symmetric light/heavy work distribution
-    const bool enable_zigzag_balancing = args.is_balanced && args.is_causal && (num_q_chunks % 2 == 0);
+    // Enable per-head zigzag for load balancing in balanced causal mode.
+    // The remap itself handles odd chunk counts, so work can stay distributed
+    // as contiguous flat Q ranges across cores.
+    const bool enable_zigzag_balancing = args.is_balanced && args.is_causal;
 
     // Cores actually issuing Q reads. When the flat q-chunk distribution is smaller
-    // than the grid the trailing cores get zero work; zigzag distributes pairs, so
-    // the unit count is total_pairs = all_heads_num_q_chunks / 2.
-    const uint32_t num_active_cores = enable_zigzag_balancing ? std::min(num_cores, all_heads_num_q_chunks / 2)
-                                                              : std::min(num_cores, all_heads_num_q_chunks);
+    // than the grid the trailing cores get zero work.
+    const uint32_t num_active_cores = std::min(num_cores, all_heads_num_q_chunks);
 
     std::vector<uint32_t> reader_compile_time_args = {
         B,
@@ -858,20 +857,12 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     // Evenly distribute flat global q chunks across cores
     const uint32_t total_q_chunks = B * NH * num_q_chunks;
 
-    uint32_t base_chunks_per_core = 0;
-    uint32_t extra_chunks_per_core = 0;
-    uint32_t cores_doing_extra_work = 0;
     if (enable_zigzag_balancing) {
-        log_debug(tt::LogOp, "Enabling zigzag balancing with even num_q_chunks: {}", num_q_chunks);
-        const uint32_t total_pairs = total_q_chunks / 2;
-        cores_doing_extra_work = total_pairs % num_cores;
-        base_chunks_per_core = (num_cores == 0) ? 0 : (total_pairs / num_cores) * 2;
-        extra_chunks_per_core = (num_cores == 0) ? 0 : 2;
-    } else {
-        cores_doing_extra_work = total_q_chunks % num_cores;
-        base_chunks_per_core = (num_cores == 0) ? 0 : (total_q_chunks / num_cores);
-        extra_chunks_per_core = (num_cores == 0) ? 0 : 1;
+        log_debug(tt::LogOp, "Enabling zigzag balancing with num_q_chunks: {}", num_q_chunks);
     }
+    const uint32_t cores_doing_extra_work = (num_cores == 0) ? 0 : total_q_chunks % num_cores;
+    const uint32_t base_chunks_per_core = (num_cores == 0) ? 0 : total_q_chunks / num_cores;
+    const uint32_t extra_chunks_per_core = (num_cores == 0) ? 0 : 1;
 
     uint32_t next_global_chunk = 0;
 
