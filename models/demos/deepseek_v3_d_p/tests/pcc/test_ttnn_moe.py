@@ -142,6 +142,7 @@ def test_ttnn_moe(
     dispatch_group_size = mesh_config.dispatch_group_size
     num_dispatch_groups = mesh_config.num_dispatch_groups
     n_sp_devices, n_tp_devices = mesh_device.shape
+    layer_idx = 0
 
     logger.debug(f"\n{'='*60}")
     logger.debug("TtMoe PCC Test")
@@ -181,37 +182,23 @@ def test_ttnn_moe(
     moe_cache_dir.mkdir(parents=True, exist_ok=True)
 
     init_checker(moe_cache_dir)
-    ttnn_cache_complete = TtMoe.check_cache_complete(moe_cache_dir, layer_idx=0, experts_per_chip=experts_per_chip)
+    ttnn_cache_complete = TtMoe.check_cache_complete(
+        moe_cache_dir, layer_idx=layer_idx, experts_per_chip=experts_per_chip
+    )
     need_torch_weights = not ttnn_cache_complete or run_pcc_check
     logger.info(f"Cache status: TTNN={ttnn_cache_complete}, need_torch_weights={need_torch_weights}")
 
-    torch_weights_cache = moe_cache_dir / "torch_weights.pt"
     if need_torch_weights:
-        if torch_weights_cache.exists():
-            logger.info(f"Loading cached torch weights from {torch_weights_cache}")
-            profiler.start("weights_loading")
-            cached = torch.load(torch_weights_cache, weights_only=True)
-            all_routed_weights = cached["routed"]
-            shared_expert_weights = cached["shared"]
-            gate_weights = cached["gate"]
-            profiler.end("weights_loading")
+        logger.info("Creating torch weights...")
+        profiler.start("weights_creation")
+        if run_pcc_check:
+            all_routed_weights = create_torch_expert_weights(num_routed_experts, emb_dim, hidden_dim)
+            shared_expert_weights = create_shared_expert_weights(emb_dim, hidden_dim)
         else:
-            logger.info("Creating torch weights (cold cache)...")
-            profiler.start("weights_creation")
-            if run_pcc_check:
-                all_routed_weights = create_torch_expert_weights(num_routed_experts, emb_dim, hidden_dim)
-                shared_expert_weights = create_shared_expert_weights(emb_dim, hidden_dim)
-            else:
-                all_routed_weights = None
-                shared_expert_weights = None
-            gate_weights = create_gate_weights(num_routed_experts, emb_dim)
-            profiler.end("weights_creation")
-
-            logger.info(f"Saving torch weights to {torch_weights_cache}")
-            torch.save(
-                {"routed": all_routed_weights, "shared": shared_expert_weights, "gate": gate_weights},
-                torch_weights_cache,
-            )
+            all_routed_weights = None
+            shared_expert_weights = None
+        gate_weights = create_gate_weights(num_routed_experts, emb_dim)
+        profiler.end("weights_creation")
 
         # Build TTNN cache if not already complete
         if not ttnn_cache_complete:
@@ -228,7 +215,7 @@ def test_ttnn_moe(
                 routed_expert_weights_dtype=ttnn.bfloat4_b,
                 shared_expert_weights_dtype=ttnn.bfloat8_b,
                 cache_path=moe_cache_dir,
-                layer_idx=0,
+                layer_idx=layer_idx,
             )
             profiler.end("ttnn_cache_build")
 
@@ -328,6 +315,7 @@ def test_ttnn_moe(
         gate_weights=gate_weights,
         gate_fallback_mode=gate_fallback_mode,
         weight_cache_path=moe_cache_dir,
+        layer_idx=layer_idx,
     )
     ttnn.synchronize_device(mesh_device)
     profiler.end("tt_moe_creation")

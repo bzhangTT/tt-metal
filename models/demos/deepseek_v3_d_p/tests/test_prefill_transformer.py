@@ -117,7 +117,7 @@ SEQ_LEN_25K = 25 * 1024
     ],
     ids=["e64_host", "e256_host", "e256_device", "e256_device_fp32"],
 )
-@pytest.mark.parametrize("num_iterations", [1, 25], ids=["iter1", "iter25"])
+@pytest.mark.parametrize("num_iterations", [1, 25, 2000], ids=["iter1", "iter25", "iter2000"])
 @pytest.mark.parametrize(
     "mesh_device, device_params, num_links, topology",
     [
