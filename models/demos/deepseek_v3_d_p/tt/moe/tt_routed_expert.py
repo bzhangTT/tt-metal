@@ -38,8 +38,7 @@ def DEBUG_TENSOR(x: ttnn.Tensor, name: str):
 
 
 class TtRoutedExpert(LightweightModule):
-    # FIXED_EXPERT_LENGTH = 2048
-    FIXED_EXPERT_LENGTH = 1024
+    FIXED_EXPERT_LENGTH = 2048
 
     @staticmethod
     def check_cache_complete(cache_path: Path, cache_name_prefix: str, experts_per_chip: int) -> bool:

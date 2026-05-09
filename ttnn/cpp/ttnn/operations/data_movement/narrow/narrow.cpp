@@ -75,9 +75,12 @@ ttnn::Tensor narrow(
 
     tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config =
         std::get<tt::tt_metal::distributed::ReplicatedBufferConfig>(storage.get_mesh_buffer().global_config());
-    uint32_t reduction_factor = input_tensor_shape[dim] / length;
-    replicated_config.size /= reduction_factor;
-    tt::tt_metal::distributed::MeshBufferConfig narrowed_global_config = replicated_config;
+    // replicated_config.size is updated per-branch below: the DRAM-interleaved
+    // path derives it from the narrowed region's tile-page count (so it remains
+    // correct when input_tensor_shape[dim] is not an integer multiple of length,
+    // e.g. 6400 narrowed to length 1024). The sharded path uses an integer
+    // reduction_factor; its precondition checks ensure that division is exact.
+    tt::tt_metal::distributed::MeshBufferConfig narrowed_global_config;
 
     // Handle INTERLEAVED DRAM buffers
     if (input_tensor.memory_config().buffer_type() == ttnn::BufferType::DRAM &&
@@ -120,6 +123,21 @@ ttnn::Tensor narrow(
         uint64_t offset_bytes = (start_page_id / num_banks) * buffer->aligned_page_size();
         auto device_local_config = storage.get_mesh_buffer().device_local_config();
 
+        // Size the narrowed view by counting the tile pages it actually covers
+        // and multiplying by the on-device aligned page size (e.g. 1088B for a
+        // BFLOAT8_B tile). Computing it directly — rather than dividing the
+        // source size by an integer reduction factor — avoids a truncation bug
+        // when input_tensor_shape[dim] is not an integer multiple of length
+        // (the truncated factor produces a size that is no longer a clean
+        // multiple of the page size, tripping Buffer size validation).
+        // The numerator mirrors start_page_id's: bytes covered by the slice
+        // (length * elements_per_block * element_size_bytes), divided by the
+        // logical page size to yield page count.
+        const uint64_t narrowed_pages =
+            (static_cast<uint64_t>(length) * elements_per_block * element_size_bytes) / logical_page_size;
+        replicated_config.size = narrowed_pages * buffer->aligned_page_size();
+        narrowed_global_config = replicated_config;
+
         auto subtensor_mesh = tt::tt_metal::distributed::MeshBuffer::create(
             narrowed_global_config,
             device_local_config,
@@ -140,6 +158,13 @@ ttnn::Tensor narrow(
 
     // Handle sharded L1 buffers
     if (input_tensor.memory_config().buffer_type() == ttnn::BufferType::L1 && input_tensor.is_sharded()) {
+        // Sharded narrowing only allows shard-aligned slicing (enforced by the
+        // checks below), so input_tensor_shape[dim] is always a multiple of
+        // length here and the integer division is exact.
+        const uint32_t reduction_factor = input_tensor_shape[dim] / length;
+        replicated_config.size /= reduction_factor;
+        narrowed_global_config = replicated_config;
+
         // Compute internal block size for non-last dimensions
         uint64_t elements_per_row = 1;
         for (uint32_t i = dim + 1; i < input_tensor_shape.size() - 1; ++i) {

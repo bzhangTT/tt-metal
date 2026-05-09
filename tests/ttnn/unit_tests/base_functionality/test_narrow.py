@@ -153,6 +153,60 @@ def test_narrow(input_shape, dim, start, length, memory_config, layout, dtype, d
 
 
 @pytest.mark.parametrize(
+    "dtype",
+    [ttnn.bfloat8_b, ttnn.bfloat4_b, ttnn.bfloat16],
+)
+@pytest.mark.parametrize(
+    "input_shape, dim, start, length",
+    [
+        # input_tensor_shape[dim] is not an integer multiple of length, and
+        # the truncated reduction_factor doesn't divide the source tile count
+        # cleanly — exactly the case where the old size = src_size / RF was
+        # not a multiple of the tile page size, tripping Buffer size validation.
+        # Small triggering case: 160/64 = 2.5, src_tiles=5, 5 % 2 = 1.
+        ((1, 1, 160, 32), 2, 0, 64),
+        # Mirrors the MoE routed-expert chunking ratio: 6400/2048 = 3.125,
+        # 50 tiles % 6 = 2 (analogous to 6400/1024 in test_ttnn_moe).
+        ((1, 1, 6400, 32), 2, 0, 1024),
+        # Same MoE-style ratio with a non-zero, bank-aligned start
+        # (start_page_id = 768*32/1024 = 24, multiple of 8 and 12).
+        ((1, 1, 1600, 32), 2, 768, 256),
+    ],
+    ids=[
+        "dram_dim2_tile_nondivisible_small",
+        "dram_dim2_tile_moe_ratio_start0",
+        "dram_dim2_tile_moe_ratio_mid",
+    ],
+)
+def test_narrow_dram_tile_nondivisible(input_shape, dim, start, length, dtype, device):
+    """Regression test: narrow on TILE/DRAM-interleaved must succeed when the
+    source dim along which we narrow isn't a multiple of length. Previously
+    the buffer size was computed as src_size / (src_dim / length), where the
+    inner integer division silently truncated, leaving the new size off by a
+    non-tile-aligned remainder."""
+    memory_config = ttnn.MemoryConfig(buffer_type=ttnn.BufferType.DRAM)
+    layout = ttnn.TILE_LAYOUT
+
+    torch_input_tensor = torch.randn(input_shape, dtype=tt_dtype_to_torch_dtype[dtype])
+    torch_result = torch.narrow(torch_input_tensor, dim, start, length)
+
+    input_tensor = ttnn.from_torch(
+        torch_input_tensor, layout=layout, dtype=dtype, device=device, memory_config=memory_config
+    )
+    ttnn_output = ttnn.narrow(input_tensor, dim, start, length)
+
+    assert layout == ttnn_output.layout
+    assert memory_config.buffer_type == ttnn_output.memory_config().buffer_type
+    assert memory_config.memory_layout == ttnn_output.memory_config().memory_layout
+    output = ttnn.to_torch(ttnn_output)
+    if dtype == ttnn.bfloat8_b or dtype == ttnn.bfloat4_b:
+        target_pcc = 0.95 if dtype == ttnn.bfloat4_b else 0.99
+        assert_with_pcc(torch_result, output, target_pcc)
+    else:
+        assert_equal(torch_result, output)
+
+
+@pytest.mark.parametrize(
     "input_shape, dim, start, length, memory_config, layout",
     [
         (
