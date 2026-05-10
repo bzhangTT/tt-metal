@@ -38,6 +38,11 @@
 #   --no-split        Skip compile-producer step; run pytest --run-simulator without
 #                     --compile-consumer (combined compile+run in one pytest invocation).
 #                     Use for issue-solver tests that don't pre-build ELFs.
+#   --log-dir  DIR    DEBUG-ONLY. When set, append combined stdout+stderr from each
+#                     phase to <DIR>/compile.log and <DIR>/run.log (created if missing).
+#                     Output still streams to the terminal as usual; the file is only
+#                     so you can scroll back through long verification runs and see
+#                     in-timeline what happened. Default: no log file.
 #   --verbose         Print step headers to stderr
 #
 # Exit codes:
@@ -90,6 +95,7 @@ LOCKFILE=""  # set in _validate based on ARCH if not user-overridden
 LOCK_TIMEOUT="900"
 SIM_PATH=""
 NO_SPLIT="false"
+LOG_DIR=""
 VERBOSE="false"
 
 while [[ $# -gt 0 ]]; do
@@ -106,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --lock)          LOCKFILE="$2";      shift 2 ;;
     --lock-timeout)  LOCK_TIMEOUT="$2";  shift 2 ;;
     --sim-path)      SIM_PATH="$2";      shift 2 ;;
+    --log-dir)       LOG_DIR="$2";       shift 2 ;;
     --no-split)      NO_SPLIT="true";    shift   ;;
     --verbose|-v)    VERBOSE="true";     shift   ;;
     --help|-h)
@@ -138,7 +145,14 @@ _validate() {
   [[ $errors -gt 0 ]] && exit 4
 
   VENV="${WORKTREE}/tests/.venv"
-  TEST_DIR="${WORKTREE}/tests/python_tests/${ARCH}"
+  # Test layout is arch-dependent:
+  #   quasar              → tests/python_tests/quasar/  (arch-specific *_quasar.py)
+  #   blackhole/wormhole  → tests/python_tests/         (cross-arch tests, CHIP_ARCH selects)
+  case "$ARCH" in
+    quasar)              TEST_DIR="${WORKTREE}/tests/python_tests/quasar" ;;
+    blackhole|wormhole)  TEST_DIR="${WORKTREE}/tests/python_tests"        ;;
+    *)                   TEST_DIR="${WORKTREE}/tests/python_tests/${ARCH}" ;;
+  esac
 
   if [[ ! -d "$VENV" ]]; then
     echo "ERROR: venv not found: ${VENV}" >&2
@@ -147,6 +161,12 @@ _validate() {
   fi
   if [[ ! -d "$TEST_DIR" ]]; then
     echo "ERROR: test directory not found: ${TEST_DIR}" >&2
+    exit 3
+  fi
+  if [[ ! -f "${TEST_DIR}/${TEST_FILE}" ]]; then
+    echo "ERROR: test file not found: ${TEST_DIR}/${TEST_FILE}" >&2
+    echo "       Hint: blackhole/wormhole tests live at tests/python_tests/," >&2
+    echo "             quasar tests live at tests/python_tests/quasar/." >&2
     exit 3
   fi
 
@@ -217,12 +237,22 @@ _do_compile() {
   local -a kflag=()
   [[ -n "$K_FILTER" ]] && kflag=(-k "$K_FILTER")
 
-  (
-    # shellcheck disable=SC1091
-    source "${VENV}/bin/activate"
-    cd "${TEST_DIR}"
-    CHIP_ARCH="${ARCH}" pytest --compile-producer -n "${JOBS}" "${kflag[@]}" "${TEST_FILE}"
-  )
+  if [[ -n "$LOG_DIR" ]]; then
+    mkdir -p "$LOG_DIR"
+    (
+      # shellcheck disable=SC1091
+      source "${VENV}/bin/activate"
+      cd "${TEST_DIR}"
+      CHIP_ARCH="${ARCH}" pytest --compile-producer -n "${JOBS}" "${kflag[@]}" "${TEST_FILE}"
+    ) > >(tee -a "${LOG_DIR}/compile.log") 2> >(tee -a "${LOG_DIR}/compile.log" >&2)
+  else
+    (
+      # shellcheck disable=SC1091
+      source "${VENV}/bin/activate"
+      cd "${TEST_DIR}"
+      CHIP_ARCH="${ARCH}" pytest --compile-producer -n "${JOBS}" "${kflag[@]}" "${TEST_FILE}"
+    )
+  fi
 }
 
 # ── simulate ──────────────────────────────────────────────────────────────────
@@ -309,17 +339,32 @@ _do_simulate() {
   # Use fd-based flock so we can distinguish lock-timeout (exit 3) from test
   # failure (exit 1).  The subshell scopes the fd so it closes automatically.
   local sim_exit
-  (
-    exec 9>>"${LOCKFILE}"
-    if ! flock --timeout "${LOCK_TIMEOUT}" 9; then
-      echo "ERROR: Could not acquire ${MODE} lock ${LOCKFILE} after ${LOCK_TIMEOUT}s" >&2
-      echo "       Another agent is likely running on arch=${ARCH}. Retry or check for stale locks." >&2
-      exit 3
-    fi
-    _vlog "Lock acquired; running ${MODE}"
-    bash "${sim_script}"
-  )
-  sim_exit=$?
+  if [[ -n "$LOG_DIR" ]]; then
+    mkdir -p "$LOG_DIR"
+    (
+      exec 9>>"${LOCKFILE}"
+      if ! flock --timeout "${LOCK_TIMEOUT}" 9; then
+        echo "ERROR: Could not acquire ${MODE} lock ${LOCKFILE} after ${LOCK_TIMEOUT}s" >&2
+        echo "       Another agent is likely running on arch=${ARCH}. Retry or check for stale locks." >&2
+        exit 3
+      fi
+      _vlog "Lock acquired; running ${MODE}"
+      bash "${sim_script}"
+    ) > >(tee -a "${LOG_DIR}/run.log") 2> >(tee -a "${LOG_DIR}/run.log" >&2)
+    sim_exit=$?
+  else
+    (
+      exec 9>>"${LOCKFILE}"
+      if ! flock --timeout "${LOCK_TIMEOUT}" 9; then
+        echo "ERROR: Could not acquire ${MODE} lock ${LOCKFILE} after ${LOCK_TIMEOUT}s" >&2
+        echo "       Another agent is likely running on arch=${ARCH}. Retry or check for stale locks." >&2
+        exit 3
+      fi
+      _vlog "Lock acquired; running ${MODE}"
+      bash "${sim_script}"
+    )
+    sim_exit=$?
+  fi
 
   rm -f "${sim_script}"
   trap - EXIT INT TERM

@@ -73,10 +73,13 @@ Use `timeout: 1800000` (30 min) on the Bash tool call — synchronous, never `ru
 | Code | Meaning              | Action                                                                |
 |------|----------------------|-----------------------------------------------------------------------|
 | 0    | All tests passed     | Report PASS                                                           |
-| 1    | One or more failures | Read `/tmp/llk_test_$(whoami)/run.log`, summarise failing variants    |
-| 2    | Compile failed       | Read `/tmp/llk_test_$(whoami)/compile.log`, surface error             |
+| 1    | One or more failures | Surface failing variants from the script's stdout/stderr              |
+| 2    | Compile failed       | Surface compile error from the script's stdout/stderr                 |
 | 3    | Env error            | Likely venv missing, simulator port stuck, or `flock` timeout. Report root cause; do **not** retry blindly |
 | 4    | Bad args             | Bug in the skill/agent invocation — surface and stop                  |
+
+The script does not persist logs to disk — pytest output is captured by the
+Bash tool result. Redirect to a file yourself if you need a persistent log.
 
 ## Output Format
 
@@ -93,7 +96,6 @@ PASS — test_eltwise_binary_quasar.py (arch=quasar, command=run)
 FAIL — test_sfpu_square_quasar.py (arch=quasar, command=run)
 - 32 variants, 3 failed
 - Failing: formats:(Float16_b, Float16_b, SyncFull) — DATA_MISMATCH
-- Log: /tmp/llk_test_<user>/run.log
 ```
 
 ```

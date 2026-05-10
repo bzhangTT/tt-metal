@@ -40,9 +40,9 @@ Examples:
 ## Arch Inference
 
 If `--arch` is not provided, infer in this order:
-1. **Test path**: file lives in `tests/python_tests/<arch>/` → use `<arch>`
+1. **Test path**: file lives in `tests/python_tests/quasar/` → `quasar`
 2. **Filename suffix**: `*_quasar.py` / `*_blackhole.py` / `*_wormhole.py` → use that
-3. Otherwise: ask the user before proceeding
+3. Otherwise (top-level cross-arch tests like `test_matmul.py`): ask the user
 
 ## What to Do
 
@@ -73,7 +73,7 @@ If `--arch` is not provided, infer in this order:
           If it does NOT exist, run from the tt-llk worktree root:
               cd tests && CHIP_ARCH={arch} ./setup_testing_env.sh
           The CHIP_ARCH env var is REQUIRED — setup builds arch-specific bits.
-          If the test directory `tests/python_tests/{arch}/` does not exist, stop and report.
+          The script picks the test dir from --arch; do not pre-check it.
 
        2. Then invoke the runner with the worktree path and arch:
               bash .claude/scripts/run_test.sh {command} \
@@ -87,9 +87,8 @@ If `--arch` is not provided, infer in this order:
          0 = pass, 1 = test failure, 2 = compile failure,
          3 = env error (venv missing / lock timeout / port stuck), 4 = bad args.
 
-       On failure, read only the relevant log under `/tmp/llk_test_$(whoami)/`
-       (`compile.log` for exit 2, `run.log` for exit 1) and surface the failing
-       lines. Do not modify code.
+       On failure, surface the failing lines from the script's stdout/stderr
+       (the script does not persist logs to disk). Do not modify code.
    ```
 
 4. **Report** the agent's result. If the agent reports exit 1 (test failure) or 2 (compile failure), suggest `/debug-kernel` as the next step. If exit 3 (env error), surface the root cause (venv missing, simulator port stuck, lock timeout) and stop — don't retry blindly.
