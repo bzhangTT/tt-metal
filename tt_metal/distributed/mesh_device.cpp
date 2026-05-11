@@ -1384,7 +1384,9 @@ void MeshDeviceImpl::init_realtime_profiler_socket(const std::shared_ptr<MeshDev
     if (realtime_profiler_) {
         return;
     }
-    realtime_profiler_ = std::make_unique<RealtimeProfilerManager>(mesh_device);
+    (void)mesh_device;
+    // Temporarily disabled to measure MeshDevice setup cost without real-time profiler startup.
+    // realtime_profiler_ = std::make_unique<RealtimeProfilerManager>(mesh_device);
 }
 
 void MeshDeviceImpl::trigger_realtime_profiler_sync_check() {
