@@ -67,9 +67,8 @@ PermuteDeviceOperation::spec_return_value_t PermuteDeviceOperation::compute_outp
 
     auto output_mem_config = attributes.output_mem_config;
 
-    // Derive shard_spec for sharded output when the caller did not supply one.
+    // Derive shard_spec when sharded output lacks one.
     if (output_mem_config.is_sharded() && !output_mem_config.shard_spec().has_value()) {
-        auto padded_input_shape = input_tensor.padded_shape();
         SmallVector<uint32_t> output_padded_vec(output_shape.view().begin(), output_shape.view().end());
         if (input_tensor.layout() == Layout::TILE && output_shape.rank() >= 2) {
             const auto& tile = input_tensor.tensor_spec().tile();
@@ -79,10 +78,11 @@ PermuteDeviceOperation::spec_return_value_t PermuteDeviceOperation::compute_outp
         }
         auto output_padded_shape = Shape(std::move(output_padded_vec));
 
-        // Try to adapt the input shard spec to the permuted output shape.
+        // Adapt input shard spec only when input/output share the same shard layout.
         bool derived = false;
-        if (input_tensor.is_sharded() && input_tensor.shard_spec().has_value()) {
-            const auto& from_shape = padded_input_shape;
+        if (input_tensor.is_sharded() && input_tensor.shard_spec().has_value() &&
+            input_tensor.memory_config().memory_layout() == output_mem_config.memory_layout()) {
+            const auto& from_shape = input_tensor.padded_shape();
             uint64_t from_vol = 1, to_vol = 1;
             for (int i = 0; i < static_cast<int>(from_shape.rank()) - 1; ++i) {
                 from_vol *= from_shape[i];
@@ -98,22 +98,21 @@ PermuteDeviceOperation::spec_return_value_t PermuteDeviceOperation::compute_outp
                 auto adjusted =
                     transpose::adjust_shard_spec_to_shape(*input_tensor.shard_spec(), from_shape, output_padded_shape);
                 if (adjusted.has_value()) {
-                    output_mem_config = output_mem_config.with_shard_spec(*adjusted);
-                    derived = true;
+                    const bool tile_layout = input_tensor.layout() == Layout::TILE;
+                    const bool tile_aligned = adjusted->shape[0] % tt::constants::TILE_HEIGHT == 0 &&
+                                              adjusted->shape[1] % tt::constants::TILE_WIDTH == 0;
+                    if (!tile_layout || tile_aligned) {
+                        output_mem_config = output_mem_config.with_shard_spec(std::move(adjusted));
+                        derived = true;
+                    }
                 }
             }
         }
         if (!derived) {
-            // Fall back to interleaved when input is sharded but shard spec
-            // cannot be adapted, or generate a fresh spec for interleaved input.
-            if (input_tensor.is_sharded()) {
-                output_mem_config =
-                    MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
-            } else {
-                auto shard_spec = transpose::generate_transpose_shard_spec(
-                    input_tensor, output_padded_shape, output_mem_config.memory_layout());
-                output_mem_config = output_mem_config.with_shard_spec(shard_spec);
-            }
+            // Generate a fresh shard spec for the permuted shape.
+            auto shard_spec = transpose::generate_transpose_shard_spec(
+                input_tensor, output_padded_shape, output_mem_config.memory_layout());
+            output_mem_config = output_mem_config.with_shard_spec(shard_spec);
         }
     }
 

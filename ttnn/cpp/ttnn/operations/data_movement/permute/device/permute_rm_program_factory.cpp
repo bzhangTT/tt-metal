@@ -11,9 +11,9 @@
 namespace ttnn::operations::data_movement {
 
 namespace detail {
-uint64_t num_pages(const ttnn::Tensor& input_tensor) {
+uint32_t num_pages(const ttnn::Tensor& input_tensor) {
     const auto& shape = input_tensor.logical_shape();
-    return shape.volume() / shape[-1];
+    return static_cast<uint32_t>(shape.volume() / shape[-1]);
 }
 
 uint32_t page_size(const ttnn::Tensor& input_tensor) {
@@ -56,7 +56,7 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreRowInvariant::c
     uint32_t src0_cb_index = tt::CBIndex::c_0;
     uint32_t num_input_pages_to_read = 2;
 
-    uint64_t num_rows = detail::num_pages(input_tensor);
+    uint32_t num_rows = detail::num_pages(input_tensor);
 
     auto compute_with_storage_grid_size = input_tensor.device()->compute_with_storage_grid_size();
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
@@ -82,8 +82,7 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreRowInvariant::c
         "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
         "reader_permute_interleaved_rm_row_invariant.cpp";
     reader_desc.core_ranges = all_cores;
-    reader_desc.named_compile_time_args = {
-        {"N", N}, {"page_size", input_rm_page_size}, {"num_rows", static_cast<uint32_t>(num_rows)}};
+    reader_desc.named_compile_time_args = {{"N", N}, {"page_size", input_rm_page_size}, {"num_rows", num_rows}};
     reader_desc.config = ReaderConfigDescriptor{};
     TensorAccessorArgs(*src_buffer, tensor_accessor::ArgConfig::RuntimeTensorShape)
         .append_to(reader_desc.compile_time_args, reader_desc.common_runtime_args);
@@ -94,8 +93,7 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreRowInvariant::c
         "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/dataflow/"
         "writer_permute_interleaved_rm_row_invariant.cpp";
     writer_desc.core_ranges = all_cores;
-    writer_desc.named_compile_time_args = {
-        {"N", N}, {"page_size", output_rm_page_size}, {"num_rows", static_cast<uint32_t>(num_rows)}};
+    writer_desc.named_compile_time_args = {{"N", N}, {"page_size", output_rm_page_size}, {"num_rows", num_rows}};
     writer_desc.config = WriterConfigDescriptor{};
     TensorAccessorArgs(*dst_buffer).append_to(writer_desc.compile_time_args);
 
@@ -167,11 +165,11 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreBlockedGeneric:
     uint32_t W_stride = output_strides[x_dim];
 
     uint32_t N = operation_attributes.dims.size();
-    uint64_t num_rows = detail::num_pages(input_tensor);
+    uint32_t num_rows = detail::num_pages(input_tensor);
 
     uint32_t x_blocks = tt::div_up(X, x_block_size);
     uint32_t w_blocks = tt::div_up(W, w_block_size);
-    uint64_t num_blocks_total = (num_rows / X) * static_cast<uint64_t>(x_blocks) * w_blocks;
+    uint32_t num_blocks_total = (num_rows / X) * x_blocks * w_blocks;
 
     auto compute_with_storage_grid_size = input_tensor.device()->compute_with_storage_grid_size();
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
@@ -218,9 +216,9 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreBlockedGeneric:
     reader_desc.named_compile_time_args = {
         {"N", N},
         {"page_size", input_cb_page_size},
-        {"num_rows", static_cast<uint32_t>(num_rows)},
+        {"num_rows", num_rows},
         {"x_dim", x_dim},
-        {"num_blocks_total", static_cast<uint32_t>(num_blocks_total)},
+        {"num_blocks_total", num_blocks_total},
         {"x_blocks", x_blocks},
         {"w_blocks", w_blocks},
         {"x_block_size", x_block_size},
@@ -240,14 +238,14 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreBlockedGeneric:
     writer_desc.named_compile_time_args = {
         {"N", N},
         {"output_page_size", output_cb_page_size},
-        {"num_rows", static_cast<uint32_t>(num_rows)},
+        {"num_rows", num_rows},
         {"X", X},
         {"X_stride", X_stride},
         {"x_dim", x_dim},
         {"W_stride", W_stride},
         {"input_page_size", input_cb_page_size},
         {"element_size", input_tensor.element_size()},
-        {"num_blocks_total", static_cast<uint32_t>(num_blocks_total)},
+        {"num_blocks_total", num_blocks_total},
         {"x_blocks", x_blocks},
         {"w_blocks", w_blocks},
         {"x_block_size", x_block_size},

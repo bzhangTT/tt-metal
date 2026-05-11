@@ -496,8 +496,7 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreTiledGeneric::c
     auto* src_buffer = input_tensor.buffer();
     auto* dst_buffer = output_tensor.buffer();
 
-    uint64_t logical_volume = static_cast<uint64_t>(input_shape.volume());
-    uint64_t num_rows = logical_volume / input_shape[rank - 1];
+    uint32_t num_rows = static_cast<uint32_t>(input_shape.volume() / input_shape[rank - 1]);
     uint32_t y_dim_index_in_input = dims[rank - 2];
 
     uint32_t x_dim_index_in_input = dims[rank - 1];
@@ -532,15 +531,15 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreTiledGeneric::c
 
     uint32_t num_faces_w = tile_shape[1] / face_shape[1];
 
-    uint64_t padded_xw_volume = static_cast<uint64_t>(X_p) * W_p;
+    uint32_t padded_xw_volume = X_p * W_p;
     for (uint32_t i = 0; i < rank - 1; i++) {
         if (i == x_dim_index_in_input) {
             continue;
         }
-        padded_xw_volume *= static_cast<uint64_t>(input_shape[i]);
+        padded_xw_volume *= input_shape[i];
     }
 
-    uint64_t xw_blocks = padded_xw_volume / (tile_shape[0] * tile_shape[1]);
+    uint32_t xw_blocks = padded_xw_volume / (tile_shape[0] * tile_shape[1]);
 
     bool needs_x_padding = (x % tile_shape[1] != 0);
     bool needs_y_padding = (y % tile_shape[0] != 0);
@@ -655,7 +654,7 @@ tt::tt_metal::ProgramDescriptor PermuteDeviceOperation::MultiCoreTiledGeneric::c
         });
     }
 
-    uint64_t non_x_rows = num_rows / x;
+    uint32_t non_x_rows = num_rows / x;
 
     // Reader kernel
     KernelDescriptor reader_desc;

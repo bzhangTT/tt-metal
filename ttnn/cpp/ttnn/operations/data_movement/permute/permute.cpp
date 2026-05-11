@@ -5,6 +5,7 @@
 #include "permute.hpp"
 
 #include "ttnn/operations/data_movement/transpose/transpose.hpp"
+#include "ttnn/operations/data_movement/transpose/device/transpose_utils.hpp"
 #include "ttnn/operations/data_movement/permute/device/permute_device_operation.hpp"
 
 #include <tt-metalium/hal.hpp>
@@ -16,6 +17,24 @@
 
 namespace ttnn::operations::data_movement::detail {
 
+inline bool is_rm_block_or_width_sharded(const ttnn::Tensor& t) {
+    if (t.layout() != Layout::ROW_MAJOR || !t.is_sharded()) {
+        return false;
+    }
+    auto ml = t.memory_config().memory_layout();
+    return ml == tt::tt_metal::TensorMemoryLayout::BLOCK_SHARDED ||
+           ml == tt::tt_metal::TensorMemoryLayout::WIDTH_SHARDED;
+}
+
+inline bool is_block_or_width_sharded_mc(const std::optional<MemoryConfig>& mc) {
+    if (!mc.has_value() || !mc->is_sharded()) {
+        return false;
+    }
+    auto ml = mc->memory_layout();
+    return ml == tt::tt_metal::TensorMemoryLayout::BLOCK_SHARDED ||
+           ml == tt::tt_metal::TensorMemoryLayout::WIDTH_SHARDED;
+}
+
 ttnn::Tensor permute_impl(
     const ttnn::Tensor& a,
     const ttnn::SmallVector<uint32_t>& dims,
@@ -23,21 +42,39 @@ ttnn::Tensor permute_impl(
     float pad_value = 0.0f) {
     uint32_t rank = a.logical_shape().rank();
 
+    // RM width/block sharded rows span multiple cores; unshard first, then
+    // permute on interleaved data and reshard if needed.
+    const bool in_bad = is_rm_block_or_width_sharded(a);
+    const bool out_bad = a.layout() == Layout::ROW_MAJOR && is_block_or_width_sharded_mc(output_mem_config);
+    if (in_bad || out_bad) {
+        const auto interleaved_l1 =
+            MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
+        auto x = in_bad ? ttnn::to_memory_config(a, interleaved_l1, std::nullopt) : a;
+        auto intermediate_mc = out_bad ? std::optional<MemoryConfig>(interleaved_l1) : output_mem_config;
+        // Safe: x is interleaved and intermediate_mc is interleaved, so re-entry skips this block.
+        auto result = permute_impl(x, dims, intermediate_mc, pad_value);
+        if (out_bad) {
+            MemoryConfig final_mc = output_mem_config.value();
+            if (!final_mc.shard_spec().has_value()) {
+                auto shard_spec =
+                    transpose::generate_transpose_shard_spec(result, result.padded_shape(), final_mc.memory_layout());
+                final_mc = final_mc.with_shard_spec(shard_spec);
+            }
+            result = ttnn::to_memory_config(result, final_mc, std::nullopt);
+        }
+        return result;
+    }
+
     auto prim_permute = [&](const ttnn::Tensor& input) -> ttnn::Tensor {
         return ttnn::prim::permute(input, dims, output_mem_config.value_or(a.memory_config()), std::nullopt, pad_value);
     };
 
     if (rank > 4) {
-        // Sharded rank > 4: run prim::permute to L1-interleaved output, then
-        // convert to the requested sharded config if needed.
         if (a.is_sharded()) {
-            auto l1_interleaved =
-                MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
-            auto result = ttnn::prim::permute(a, dims, l1_interleaved, std::nullopt, pad_value);
-            if (output_mem_config.has_value() && output_mem_config->is_sharded()) {
-                return ttnn::to_memory_config(result, output_mem_config.value());
-            }
-            return result;
+            // Preserve input's shard layout; compute_output_specs derives a valid spec.
+            auto effective_config = output_mem_config.value_or(
+                MemoryConfig(a.memory_config().memory_layout(), a.memory_config().buffer_type()));
+            return ttnn::prim::permute(a, dims, effective_config, std::nullopt, pad_value);
         }
         return prim_permute(a);
     }
@@ -70,8 +107,7 @@ ttnn::Tensor permute_impl(
         return ttnn::transpose(input, 0, 1, output_mem_config, 0.0f);
     };
 
-    // Sharded inputs: decompose into transpose chains when possible, otherwise
-    // fall back to prim::permute with L1-interleaved output.
+    // Sharded: decompose into transpose chains or fall back to prim::permute.
     if (a.is_sharded()) {
         if (N == 0 && C == 1 && H == 2 && W == 3) {
             output = formatted_input_tensor;
@@ -88,12 +124,10 @@ ttnn::Tensor permute_impl(
         } else if (N == 1 && C == 0 && H == 2 && W == 3) {
             output = transpose_cn(formatted_input_tensor);
         } else {
-            auto l1_interleaved =
-                MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
-            output = ttnn::prim::permute(formatted_input_tensor, dims, l1_interleaved, std::nullopt, pad_value);
-            if (output_mem_config.has_value() && output_mem_config->is_sharded()) {
-                output = ttnn::to_memory_config(output, output_mem_config.value());
-            }
+            // Preserve input's shard layout; compute_output_specs derives a valid spec.
+            auto effective_config = output_mem_config.value_or(
+                MemoryConfig(a.memory_config().memory_layout(), a.memory_config().buffer_type()));
+            output = ttnn::prim::permute(formatted_input_tensor, dims, effective_config, std::nullopt, pad_value);
         }
     } else {
         if (N == 0 && C == 1 && H == 2 && W == 3) {
@@ -122,7 +156,7 @@ ttnn::Tensor permute_launch(
 }
 
 bool is_permute_nop(const ttnn::Tensor& a, const ttnn::SmallVector<uint32_t>& dims) {
-    // Trivial early-out for rank <= 1.
+    // Rank <= 1 is always a no-op.
     const auto rank = a.logical_shape().rank();
     if (rank <= 1) {
         return true;
@@ -135,14 +169,13 @@ bool is_permute_nop(const ttnn::Tensor& a, const ttnn::SmallVector<uint32_t>& di
         return true;
     }
 
-    // For tiled layout, never a NOP if the last two dimensions are permuted.
-    // For row-major, never a NOP if the last dimension is permuted.
+    // TILE: last two dims must stay; RM: last dim must stay.
     if ((a.layout() == Layout::TILE && (dims[rank - 1] != rank - 1 || dims[rank - 2] != rank - 2)) ||
         (a.layout() == Layout::ROW_MAJOR && dims[rank - 1] != rank - 1)) {
         return false;
     }
 
-    // If the shape changed, definitely not a no-op.
+    // Shape change → not a no-op.
     const auto& shape = a.logical_shape();
     ttnn::SmallVector<uint32_t> perm_shape(rank);
     for (uint32_t i = 0; i < rank; ++i) {
@@ -153,8 +186,7 @@ bool is_permute_nop(const ttnn::Tensor& a, const ttnn::SmallVector<uint32_t>& di
         return false;
     }
 
-    // Shape stayed the same — still not a NOP if we relocated a dimension
-    // with size > 1 (changes the physical data layout).
+    // Moving a dim with size > 1 changes physical layout.
     for (uint32_t i = 0; i < rank; ++i) {
         const uint32_t j = dims[i];
         if (i != j && shape[i] > 1) {
@@ -205,11 +237,11 @@ ttnn::Tensor permute(
 
     const auto input_layout = input_tensor.layout();
 
-    if (input_layout == Layout::ROW_MAJOR && memory_config.has_value()) {
+    if (input_layout == Layout::ROW_MAJOR && memory_config.has_value() && memory_config->is_sharded() &&
+        memory_config->shard_spec().has_value()) {
         uint32_t l1_alignment = tt::tt_metal::hal::get_l1_alignment();
         TT_FATAL(
-            !memory_config.value().is_sharded() ||
-                (*memory_config.value().shard_spec()).shape[1] * input_tensor.element_size() % (l1_alignment) == 0,
+            memory_config->shard_spec()->shape[1] * input_tensor.element_size() % (l1_alignment) == 0,
             "Shard page size must be aligned to {}B for L1 Tensor",
             l1_alignment);
     }
