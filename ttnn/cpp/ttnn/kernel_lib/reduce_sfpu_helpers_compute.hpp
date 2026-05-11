@@ -11,40 +11,56 @@
 
 /**
  * @file reduce_sfpu_helpers_compute.hpp
- * @brief SFPU reduce helper for tile MAX/MIN when the FPU GMPOOL path cannot be used.
+ * @brief SFPU path for Int32 tile reduction when the FPU GMPOOL reduce path is invalid on device
  *
- * `reduce_sfpu` is the SFPU sibling of `compute_kernel_lib::reduce`:
- * - `reduce()` uses FPU GMPOOL (`reduce_tile`), which does not give correct Int32 MAX/MIN on device.
- * - `reduce_sfpu()` uses SFPU `sfpu_reduce` for within-tile reduction and
- *   `binary_{max,min}_int32_tile` for cross-tile folds along the reduce axis.
+ * Provides ONE function, `reduce_sfpu`, as the SFPU counterpart to `compute_kernel_lib::reduce`
+ * in reduce_helpers_compute.hpp (same streaming WaitAndPopPerTile-style flow for one axis):
+ * - Row reduction (REDUCE_ROW): reduces W dimension, outputs Ht tiles per batch
+ * - Column reduction (REDUCE_COL): reduces H dimension, outputs Wt tiles per batch
  *
- * Supports REDUCE_ROW (reduces W -> Ht outputs) and REDUCE_COL (reduces H -> Wt outputs).
- * MIN + REDUCE_ROW is rejected at compile time; the host launches reduce_sfpu_w_neg.cpp directly
- * for that case, mirroring how the FPU path uses reduce_w_neg.cpp.
+ * There is no REDUCE_SCALAR here; full HxW reduction uses two passes on the host, like the FPU path.
  *
- * Library responsibilities: DST acquire/commit/wait/release, CB wait/pop/reserve/push,
- * pack_tile, and the packer reduce mask (sfpu_reduce does not configure it).
+ * This library hides the complexity of:
+ * - tile_regs_acquire/commit/wait/release DST register management
+ * - init_sfpu / copy_tile_to_dst_init_short (SFPU path; no GMPOOL reduce_tile)
+ * - Circular buffer manipulation (cb_wait_front, cb_pop_front, cb_reserve_back, cb_push_back)
+ * - pack_tile for writing results to output CB
+ * - Packer reduce mask setup (sfpu_reduce does not configure it; this helper does)
  *
- * IMPORTANT: Do not call `compute_kernel_hw_startup()`; this helper calls `init_sfpu`
- * and `copy_tile_to_dst_init_short` itself.
+ * Within-tile reduction uses SFPU `sfpu_reduce`; cross-tile folds along the reduce axis use
+ * `binary_max_int32_tile` / `binary_min_int32_tile`.
  *
- * IMPORTANT: The scaler CB must contain one tile before entry. `sfpu_reduce` does not consume it;
- * the helper waits and pops it so dataflow matches the FPU kernel.
+ * IMPORTANT: Do not call `compute_kernel_hw_startup()` before `reduce_sfpu`. This helper runs
+ * on the SFPU path and calls `init_sfpu` / `copy_tile_to_dst_init_short` itself.
  *
- * Basic usage:
+ * IMPORTANT: The scaler CB must contain the scaling factor tile BEFORE calling reduce_sfpu().
+ * `sfpu_reduce` does not consume it; the helper waits and pops it so dataflow matches reduce().
+ *
+ * Basic Usage:
+ *   #include "ttnn/cpp/ttnn/kernel_lib/reduce_sfpu_helpers_compute.hpp"
+ *
+ *   // Row reduction (W) - output has Ht tiles per batch
  *   compute_kernel_lib::reduce_sfpu<ckernel::PoolType::MAX, ckernel::ReduceDim::REDUCE_ROW, DataFormat::Int32>(
  *       cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC),
  *       post_mul_scaler_bits);
+ *
+ *   // Column reduction (H) - output has Wt tiles per batch
+ *   compute_kernel_lib::reduce_sfpu<ckernel::PoolType::MAX, ckernel::ReduceDim::REDUCE_COL, DataFormat::Int32>(
+ *       cb_in, cb_scaler, cb_out,
+ *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC),
+ *       post_mul_scaler_bits);
+ *
+ * See reduce_sfpu() below for template parameters and post_mul_scaler_bits (used when
+ * REDUCE_POST_MUL is defined by the host).
  */
 
 namespace compute_kernel_lib {
 
 /**
- * @brief SFPU reduce for Int32 MAX/MIN along one tile axis.
+ * @brief SFPU reduce for Int32 along one tile axis (templates match host REDUCE_* defines).
  *
- * @tparam pool_type   PoolType::MAX or PoolType::MIN (MIN + REDUCE_ROW is rejected at compile time;
- *                     host launches reduce_sfpu_w_neg.cpp directly for that case).
+ * @tparam pool_type   PoolType::MAX
  * @tparam reduce_dim  ReduceDim::REDUCE_ROW (W) or ReduceDim::REDUCE_COL (H).
  * @tparam format      DataFormat::Int32 (only supported format).
  *

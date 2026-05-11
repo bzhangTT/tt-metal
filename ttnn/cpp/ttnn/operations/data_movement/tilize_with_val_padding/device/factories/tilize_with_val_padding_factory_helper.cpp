@@ -28,7 +28,6 @@ uint32_t get_packed_value(const Tensor& tensor, const PadValue& pad_value) {
                         {uint16_pad_value, uint16_pad_value});
                 }
                 if (tensor.dtype() == DataType::FLOAT32 || tensor.dtype() == DataType::INT32) {
-                    // INT32 callers bit-encode the sentinel into pad_value (see ttnn::reduce).
                     return std::bit_cast<uint32_t>(static_cast<float>(pad_value));
                 }
                 TT_FATAL(

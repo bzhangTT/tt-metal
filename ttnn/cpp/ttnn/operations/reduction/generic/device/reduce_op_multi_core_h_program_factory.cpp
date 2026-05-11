@@ -57,11 +57,8 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreHProgramFa
     // reduction via SFPU mul_unary_tile inside the compute kernel.
     const bool use_post_mul = operation_attributes.post_mul_scaler != 1.0f;
 
-    // Int32 max/min uses reduce_sfpu (GMPOOL is invalid for Int32 on device; issue #26726).
-    // MIN is lowered to MAX + negate before launch; math_op here is always MAX for that path.
+    // Int32 max/min uses SFPU reduce path
     const bool use_sfpu_int32_path = a.dtype() == DataType::INT32 && operation_attributes.math_op == ReduceOpMath::MAX;
-    // GMPOOL reduce_h_neg needs acc/ineg scratch CBs and deeper in/out FIFOs;
-    // reduce_sfpu_h_neg negates in DST and needs neither.
     const bool use_fpu_negate = operation_attributes.negate && !use_sfpu_int32_path;
 
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
@@ -290,9 +287,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreHProgramFa
         reader_desc.compile_time_args = reader_compile_time_args;
         reader_desc.defines = {reader_defines.begin(), reader_defines.end()};
     } else {
-        // Arg 4: row_chunk=1 for Welford or Int32 H (one tile-column at a time).
-        std::vector<uint32_t> reader_compile_time_args = {
-            Ht, Wt, HtWt, scaler_bits, /*use_welford=*/use_sfpu_int32_path ? 1u : 0u};
+        std::vector<uint32_t> reader_compile_time_args = {Ht, Wt, HtWt, scaler_bits, /*use_welford=*/0};
         TensorAccessorArgs(*src0_buffer).append_to(reader_compile_time_args);
 
         // Pass DEST config so reader can compute DEST_AUTO_LIMIT

@@ -78,10 +78,14 @@ float get_pad_value(
     // Prod reduction is handled separately in prod.cpp.
     TT_FATAL(reduce_type != reduction_common::ReduceType::Prod, "Prod reduction is not supported");
 
-    // INT32: pad_value flows through float-typed pad APIs; static_cast<uint32_t>(±inf) is UB.
-    // Bit-encode INT32 sentinels via bit_cast; avoid 0x80000000 (SFPU col-reduce corner + MIN negate).
+    // INT32 max/min: pad_value flows through float-typed pad APIs (transpose / permute /
+    // tilize_with_val_padding / fill_pad), and static_cast<uint32_t>(±inf) is UB.
+    // We therefore carry the int32 sentinel as the float's bit pattern; the data-movement
+    // ops use bit_cast<uint32_t> on the INT32 branch to recover the original int32 bits.
     if (dtype == tt::tt_metal::DataType::INT32) {
         if (reduce_type == reduction_common::ReduceType::Max) {
+            // SFPU int32 MAX reduce can return an incorrect maximum when the INT32_MIN bit pattern (0x80000000)
+            // appears in padded lanes; use INT32_MIN + 1 instead.
             return std::bit_cast<float>(static_cast<uint32_t>(0x80000001u));  // INT32_MIN + 1
         }
         if (reduce_type == reduction_common::ReduceType::Min) {

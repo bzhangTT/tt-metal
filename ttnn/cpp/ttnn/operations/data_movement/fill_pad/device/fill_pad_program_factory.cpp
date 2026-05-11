@@ -58,7 +58,6 @@ FillPadProgramFactory::cached_program_t FillPadProgramFactory::create(
     } else if (input_tensor.dtype() == DataType::UINT16) {
         packed_fill_value = pack_two_uint16_into_uint32({fill_value, fill_value});
     } else if (input_tensor.dtype() == DataType::FLOAT32 || input_tensor.dtype() == DataType::INT32) {
-        // INT32 callers bit-encode the sentinel into fill_value (see ttnn::reduce).
         packed_fill_value = std::bit_cast<uint32_t>(fill_value);
     } else {
         packed_fill_value = static_cast<std::uint32_t>(fill_value);
