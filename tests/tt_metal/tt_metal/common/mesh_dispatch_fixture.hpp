@@ -17,13 +17,27 @@
 #include "llrt.hpp"
 #include "common/tt_backend_api_types.hpp"
 #include <llrt/tt_cluster.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace tt::tt_metal {
 
 // A dispatch-agnostic test fixture
 class MeshDispatchFixture : public ::testing::Test {
 private:
-    std::map<ChipId, std::shared_ptr<distributed::MeshDevice>> id_to_device_;
+    struct SharedDevices {
+        std::map<ChipId, std::shared_ptr<distributed::MeshDevice>> id_to_device;
+        std::vector<std::shared_ptr<distributed::MeshDevice>> devices;
+        tt::ARCH arch;
+        uint32_t max_cbs;
+        bool initialized;
+
+        SharedDevices() : arch(tt::ARCH::Invalid), max_cbs(0), initialized(false) {}
+    };
+
+    static SharedDevices& shared_devices() {
+        static SharedDevices devices;
+        return devices;
+    }
 
 public:
     // A function to run a program, according to which dispatch mode is set.
@@ -68,38 +82,97 @@ protected:
         size_t l1_small_size = DEFAULT_L1_SMALL_SIZE, size_t trace_region_size = DEFAULT_TRACE_REGION_SIZE) :
         l1_small_size_{l1_small_size}, trace_region_size_{trace_region_size} {};
 
-    void SetUp() override {
-        this->DetectDispatchMode();
-        // Must set up all available devices
-        this->arch_ = tt::get_arch_from_string(tt::test_utils::get_umd_arch_name());
-        init_max_cbs();
+    static void SetUpTestSuite() {
+        ZoneScopedN("MeshDispatchFixture SetUpTestSuite");
+        auto& shared = shared_devices();
+        if (shared.initialized) {
+            return;
+        }
+
+        // Performance: opening MeshDevices is expensive because it can trigger topology discovery, driver/sysmem setup,
+        // fabric setup, and profiler sync. Share the default MeshDispatchFixture devices across tests in a suite so
+        // gtest per-test timings show test-body cost instead of repeating fixture setup. Tests that need different
+        // device sizes/configuration should override SetUp/TearDown rather than relying on this shared default.
+        {
+            ZoneScopedN("MeshDispatchFixture suite get arch");
+            shared.arch = tt::get_arch_from_string(tt::test_utils::get_umd_arch_name());
+        }
+        {
+            ZoneScopedN("MeshDispatchFixture suite init max cbs");
+            shared.max_cbs = tt::tt_metal::MetalContext::instance().hal().get_arch_num_circular_buffers();
+        }
 
         std::vector<ChipId> ids;
-        for (ChipId id : tt::tt_metal::MetalContext::instance().get_cluster().user_exposed_chip_ids()) {
-            ids.push_back(id);
+        {
+            ZoneScopedN("MeshDispatchFixture suite collect chip ids");
+            for (ChipId id : tt::tt_metal::MetalContext::instance().get_cluster().user_exposed_chip_ids()) {
+                ids.push_back(id);
+            }
         }
-        const auto& dispatch_core_config =
-            tt::tt_metal::MetalContext::instance().rtoptions().get_dispatch_core_config();
-        id_to_device_ = distributed::MeshDevice::create_unit_meshes(
-            ids, l1_small_size_, trace_region_size_, 1, dispatch_core_config);
-        devices_.clear();
-        for (const auto& [device_id, device] : id_to_device_) {
-            devices_.push_back(device);
+        {
+            ZoneScopedN("MeshDispatchFixture suite create unit meshes");
+            const auto& dispatch_core_config =
+                tt::tt_metal::MetalContext::instance().rtoptions().get_dispatch_core_config();
+            shared.id_to_device = distributed::MeshDevice::create_unit_meshes(
+                ids, DEFAULT_L1_SMALL_SIZE, DEFAULT_TRACE_REGION_SIZE, 1, dispatch_core_config);
+        }
+        {
+            ZoneScopedN("MeshDispatchFixture suite populate devices");
+            shared.devices.clear();
+            for (const auto& [device_id, device] : shared.id_to_device) {
+                shared.devices.push_back(device);
+            }
+        }
+        shared.initialized = true;
+    }
+
+    static void TearDownTestSuite() {
+        ZoneScopedN("MeshDispatchFixture TearDownTestSuite");
+        auto& shared = shared_devices();
+        if (!shared.initialized) {
+            return;
+        }
+
+        {
+            ZoneScopedN("MeshDispatchFixture suite close devices");
+            for (auto& [device_id, device] : shared.id_to_device) {
+                ZoneScopedN("MeshDispatchFixture suite close device");
+                device->close();
+                device.reset();
+            }
+        }
+        {
+            ZoneScopedN("MeshDispatchFixture suite clear devices");
+            shared.id_to_device.clear();
+            shared.devices.clear();
+            shared.arch = tt::ARCH::Invalid;
+            shared.max_cbs = 0;
+            shared.initialized = false;
+        }
+    }
+
+    void SetUp() override {
+        ZoneScopedN("MeshDispatchFixture SetUp");
+        auto& shared = shared_devices();
+        if (!shared.initialized) {
+            SetUpTestSuite();
+        }
+        {
+            ZoneScopedN("MeshDispatchFixture DetectDispatchMode");
+            this->DetectDispatchMode();
+        }
+        {
+            ZoneScopedN("MeshDispatchFixture apply shared devices");
+            this->arch_ = shared.arch;
+            this->max_cbs_ = shared.max_cbs;
+            this->devices_ = shared.devices;
         }
     }
 
     void TearDown() override {
-        // Checking if devices are empty because DPrintFixture.TensixTestPrintFinish already
-        // closed all devices
-        if (!id_to_device_.empty()) {
-            for (auto [device_id, device] : id_to_device_) {
-                device->close();
-                device.reset();
-            }
-
-            id_to_device_.clear();
-            devices_.clear();
-        }
+        ZoneScopedN("MeshDispatchFixture TearDown");
+        // Devices are owned by the suite-shared state; per-test instances only hold borrowed shared_ptr copies.
+        devices_.clear();
     }
 
     void RunTestOnDevice(

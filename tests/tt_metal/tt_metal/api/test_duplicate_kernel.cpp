@@ -54,31 +54,28 @@ TEST_F(MeshDispatchFixture, TensixFailOnDuplicateKernelCreationDataflow) {
             ZoneScopedN("Dataflow compute grid size");
             return device->compute_with_storage_grid_size();
         }();
-        EXPECT_THROW(
+        auto create_duplicate_dataflow_kernel = [&] {
+            ZoneScopedN("Dataflow duplicate creation expect throw body");
             {
-                ZoneScopedN("Dataflow duplicate creation expect throw body");
-                {
-                    ZoneScopedN("Dataflow create first dram_copy kernel");
-                    tt_metal::CreateKernel(
-                        program_,
-                        "tests/tt_metal/tt_metal/test_kernels/dataflow/dram_copy.cpp",
-                        CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
-                        DataMovementConfig{
-                            .processor = tt_metal::DataMovementProcessor::RISCV_0,
-                            .noc = tt_metal::NOC::RISCV_0_default});
-                }
-                {
-                    ZoneScopedN("Dataflow create duplicate dram_copy kernel");
-                    tt_metal::CreateKernel(
-                        program_,
-                        "tests/tt_metal/tt_metal/test_kernels/dataflow/dram_copy.cpp",
-                        CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
-                        DataMovementConfig{
-                            .processor = tt_metal::DataMovementProcessor::RISCV_0,
-                            .noc = tt_metal::NOC::RISCV_0_default});
-                }
-            },
-            std::exception);
+                ZoneScopedN("Dataflow create first dram_copy kernel");
+                tt_metal::CreateKernel(
+                    program_,
+                    "tests/tt_metal/tt_metal/test_kernels/dataflow/dram_copy.cpp",
+                    CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
+                    DataMovementConfig{
+                        .processor = tt_metal::DataMovementProcessor::RISCV_0, .noc = tt_metal::NOC::RISCV_0_default});
+            }
+            {
+                ZoneScopedN("Dataflow create duplicate dram_copy kernel");
+                tt_metal::CreateKernel(
+                    program_,
+                    "tests/tt_metal/tt_metal/test_kernels/dataflow/dram_copy.cpp",
+                    CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
+                    DataMovementConfig{
+                        .processor = tt_metal::DataMovementProcessor::RISCV_0, .noc = tt_metal::NOC::RISCV_0_default});
+            }
+        };
+        EXPECT_THROW(create_duplicate_dataflow_kernel(), std::exception);
     }
 }
 
@@ -107,37 +104,36 @@ TEST_F(MeshDispatchFixture, TensixFailOnDuplicateKernelCreationCompute) {
             return device->compute_with_storage_grid_size();
         }();
         std::vector<uint32_t> compute_kernel_args = {};
-        EXPECT_THROW(
+        auto create_duplicate_compute_kernel = [&] {
+            ZoneScopedN("Compute duplicate creation expect throw body");
             {
-                ZoneScopedN("Compute duplicate creation expect throw body");
-                {
-                    ZoneScopedN("Compute create broadcast kernel");
-                    tt_metal::CreateKernel(
-                        program_,
-                        "tests/tt_metal/tt_metal/test_kernels/compute/broadcast.cpp",
-                        CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
-                        ComputeConfig{
-                            .math_fidelity = MathFidelity::HiFi4,
-                            .fp32_dest_acc_en = false,
-                            .math_approx_mode = false,
-                            .compile_args = compute_kernel_args,
-                            .opt_level = KernelBuildOptLevel::O3});
-                }
-                {
-                    ZoneScopedN("Compute create duplicate matmul kernel");
-                    tt_metal::CreateKernel(
-                        program_,
-                        "tests/tt_metal/tt_metal/test_kernels/compute/matmul.cpp",
-                        CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
-                        ComputeConfig{
-                            .math_fidelity = MathFidelity::HiFi4,
-                            .fp32_dest_acc_en = false,
-                            .math_approx_mode = false,
-                            .compile_args = compute_kernel_args,
-                            .opt_level = KernelBuildOptLevel::O3});
-                }
-            },
-            std::exception);
+                ZoneScopedN("Compute create broadcast kernel");
+                tt_metal::CreateKernel(
+                    program_,
+                    "tests/tt_metal/tt_metal/test_kernels/compute/broadcast.cpp",
+                    CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
+                    ComputeConfig{
+                        .math_fidelity = MathFidelity::HiFi4,
+                        .fp32_dest_acc_en = false,
+                        .math_approx_mode = false,
+                        .compile_args = compute_kernel_args,
+                        .opt_level = KernelBuildOptLevel::O3});
+            }
+            {
+                ZoneScopedN("Compute create duplicate matmul kernel");
+                tt_metal::CreateKernel(
+                    program_,
+                    "tests/tt_metal/tt_metal/test_kernels/compute/matmul.cpp",
+                    CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
+                    ComputeConfig{
+                        .math_fidelity = MathFidelity::HiFi4,
+                        .fp32_dest_acc_en = false,
+                        .math_approx_mode = false,
+                        .compile_args = compute_kernel_args,
+                        .opt_level = KernelBuildOptLevel::O3});
+            }
+        };
+        EXPECT_THROW(create_duplicate_compute_kernel(), std::exception);
     }
 }
 
@@ -161,7 +157,7 @@ TEST_F(MeshDispatchFixture, TensixPassOnNormalKernelCreation) {
             return workload.get_programs().at(device_range);
         }();
         std::vector<uint32_t> compute_kernel_args = {};
-        EXPECT_NO_THROW({
+        auto create_normal_kernels = [&] {
             ZoneScopedN("Normal creation expect no throw body");
             {
                 ZoneScopedN("Normal create broadcast kernel");
@@ -189,7 +185,8 @@ TEST_F(MeshDispatchFixture, TensixPassOnNormalKernelCreation) {
                         .compile_args = compute_kernel_args,
                         .opt_level = KernelBuildOptLevel::O3});
             }
-        });
+        };
+        EXPECT_NO_THROW(create_normal_kernels());
     }
 }
 
@@ -217,7 +214,7 @@ TEST_F(MeshDispatchFixture, TensixPassOnMixedOverlapKernelCreation) {
             return device->compute_with_storage_grid_size();
         }();
         std::vector<uint32_t> compute_kernel_args = {};
-        EXPECT_NO_THROW({
+        auto create_mixed_overlap_kernels = [&] {
             ZoneScopedN("Mixed overlap creation expect no throw body");
             {
                 ZoneScopedN("Mixed overlap create dram_copy kernel");
@@ -226,8 +223,7 @@ TEST_F(MeshDispatchFixture, TensixPassOnMixedOverlapKernelCreation) {
                     "tests/tt_metal/tt_metal/test_kernels/dataflow/dram_copy.cpp",
                     CoreRange(CoreCoord(0, 0), CoreCoord(compute_grid.x, compute_grid.y)),
                     DataMovementConfig{
-                        .processor = tt_metal::DataMovementProcessor::RISCV_0,
-                        .noc = tt_metal::NOC::RISCV_0_default});
+                        .processor = tt_metal::DataMovementProcessor::RISCV_0, .noc = tt_metal::NOC::RISCV_0_default});
             }
             {
                 ZoneScopedN("Mixed overlap create matmul kernel");
@@ -242,7 +238,8 @@ TEST_F(MeshDispatchFixture, TensixPassOnMixedOverlapKernelCreation) {
                         .compile_args = compute_kernel_args,
                         .opt_level = KernelBuildOptLevel::O3});
             }
-        });
+        };
+        EXPECT_NO_THROW(create_mixed_overlap_kernels());
     }
 }
 
