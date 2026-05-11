@@ -35,8 +35,6 @@ inline void llk_pack_mop_config(const uint32_t output, std::uint32_t num_tiles =
     _llk_pack_mop_config_<untilize, zero_output, tilize>(face_r_dim, tile_c_dim, num_faces, num_tiles);
 }
 
-inline void llk_pack_set_fp32_dest_acc(bool enable) { _llk_pack_set_fp32_dest_acc_(enable); }
-
 template <bool is_fp32_dest_acc_en>
 inline void llk_pack_hw_configure(std::uint32_t pack_output) {
     const std::uint32_t output_id = get_output_id(pack_output);
@@ -290,11 +288,6 @@ inline void llk_matmul_pack(
 
 inline void llk_packer_wait_for_math_done() { _llk_packer_wait_for_math_done_(); }
 
-template <uint WaitRes = p_stall::NONE>
-inline void llk_packer_set_math_semaphore() {
-    _llk_packer_set_math_semaphore_<WaitRes>();
-}
-
 template <bool is_fp32_dest_acc_en>
 inline void llk_pack_dest_section_done() {
     _llk_pack_dest_section_done_<DST_SYNC_MODE, is_fp32_dest_acc_en>();
@@ -309,10 +302,6 @@ template <bool is_fp32_dest_acc_en, bool untilize = false>
 inline void llk_pack_dest_init([[maybe_unused]] const std::uint32_t pack_output = 16) {
     _llk_pack_dest_init_<DST_SYNC_MODE, is_fp32_dest_acc_en>();
 }
-
-inline void llk_pack_debug_dump(std::uint8_t* data, std::uint32_t byte_size) { _llk_pack_debug_dump_(data, byte_size); }
-
-inline void llk_pack_debug_dump_seek(std::uint8_t offset) { _llk_pack_debug_dump_seek_(offset); }
 
 template <bool is_fp32_dest_acc_en, bool is_tile_dim_reconfig_en = false>
 inline void llk_pack_reconfig_data_format(const std::uint32_t new_output) {

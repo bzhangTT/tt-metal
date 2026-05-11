@@ -18,6 +18,9 @@
 
 #ifdef TRISC_MATH
 #include "llk_math_common_api.h"
+#if defined(ARCH_BLACKHOLE) || defined(ARCH_WORMHOLE)
+#include "llk_math_debug.h"
+#endif
 #include "llk_math_matmul_api.h"
 #include "llk_math_unary_datacopy_api.h"
 #include "llk_math_unary_sfpu_api.h"
