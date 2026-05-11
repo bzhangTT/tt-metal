@@ -47,7 +47,7 @@ inline void llk_math_matmul(const uint dst_index, const std::uint32_t ct_dim = 1
         (ckernel::math::get_dest_max_matmul_tiles(dst_index, ct_dim, rt_dim) <
          get_dest_max_tiles<DST_SYNC_MODE, DST_ACCUM_MODE, DstTileShape::Tile32x32>()),
         "llk_math_matmul: computed matmul dest tile range exceeds available dest register "
-        "capacity. Uncomment the DEVICE_PRINT block below and enable DEVICE_PRINT support to inspect "
+        "capacity. Uncomment the DEVICE_PRINT block above and enable DEVICE_PRINT support to inspect "
         "the calculated and max dest tile values.");
 
     _llk_math_matmul_<math_fidelity, THROTTLE_LEVEL>(dst_index, ct_dim, rt_dim);

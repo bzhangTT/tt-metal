@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "llk_pack.h"
 #include "llk_pack_common.h"
 
 inline void llk_pack_set_fp32_dest_acc(bool enable) { _llk_pack_set_fp32_dest_acc_(enable); }
