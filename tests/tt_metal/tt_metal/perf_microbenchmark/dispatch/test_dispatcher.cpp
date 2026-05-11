@@ -1107,8 +1107,12 @@ public:
             append_dispatch_payload(raw, term_cmd);
         }
 
+        const auto& memmap = tt_metal::MetalContext::instance().dispatch_mem_map(CoreType::WORKER);
+        const uint32_t l1_buf_base = memmap.dispatch_buffer_base();
+        const uint32_t dispatch_buffer_pages = memmap.dispatch_buffer_pages();
+        const uint32_t dispatch_buffer_size = dispatch_buffer_pages * page_size;
+
         const uint32_t cmd_cb_pages = raw.size() / page_size;
-        const uint32_t dispatch_buffer_pages = Common::SD_DISPATCH_BUFFER_SIZE_BYTES / page_size;
         log_info(
             tt::LogTest,
             "SD: cmd_cb_pages={} dispatch_buffer_pages={} raw_bytes={}",
@@ -1116,8 +1120,6 @@ public:
             dispatch_buffer_pages,
             raw.size());
 
-        const auto& memmap = tt_metal::MetalContext::instance().dispatch_mem_map(CoreType::WORKER);
-        const uint32_t l1_buf_base = memmap.dispatch_buffer_base();
         const uint32_t cmd_cb_bytes = cmd_cb_pages * page_size;
 
         const CoreCoord disp_logical = Common::dispatch_core(this->device_);
@@ -1134,13 +1136,12 @@ public:
         const auto& soc_desc = tt_metal::MetalContext::instance().get_cluster().get_soc_desc(this->device_->id());
         if (fd_kernels_on_same_core) {
             TT_FATAL(
-                l1_buf_base + cmd_cb_bytes + Common::SD_DISPATCH_BUFFER_SIZE_BYTES <= soc_desc.worker_l1_size,
+                l1_buf_base + cmd_cb_bytes + dispatch_buffer_size <= soc_desc.worker_l1_size,
                 "SD cmd CB + dispatch CB too large for L1");
         } else {
             TT_FATAL(raw.size() + l1_buf_base <= soc_desc.worker_l1_size, "SD command buffer too large for L1");
             TT_FATAL(
-                Common::SD_DISPATCH_BUFFER_SIZE_BYTES + l1_buf_base <= soc_desc.worker_l1_size,
-                "SD dispatch buffer too large for L1");
+                dispatch_buffer_size + l1_buf_base <= soc_desc.worker_l1_size, "SD dispatch buffer too large for L1");
         }
 
         tt_metal::MetalContext::instance().get_cluster().write_core(
