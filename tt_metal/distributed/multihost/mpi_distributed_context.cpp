@@ -6,6 +6,10 @@
 #include <mpi.h>
 #include <mpi-ext.h>
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
+
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
@@ -41,6 +45,50 @@ struct MpiLauncherEnvLayout {
 };
 
 MpiLauncherEnvLayout g_mpi_launcher_env_layout{};
+
+#if defined(__linux__)
+// ORTE singleton init forks helpers; if the user's soft RLIMIT_NPROC is below the hard limit, raising the
+// soft limit here (before MPI_Init_thread) avoids bogus "max children" failures. Opt out:
+// TT_METAL_SKIP_RLIM_NPROC_BUMP=1
+void try_raise_rlimit_nproc() {
+    if (const char* skip = std::getenv("TT_METAL_SKIP_RLIM_NPROC_BUMP")) {
+        if (skip[0] == '1' && skip[1] == '\0') {
+            return;
+        }
+    }
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NPROC, &rl) != 0) {
+        return;
+    }
+    if (rl.rlim_max != RLIM_INFINITY) {
+        if (rl.rlim_cur < rl.rlim_max) {
+            rl.rlim_cur = rl.rlim_max;
+            (void)setrlimit(RLIMIT_NPROC, &rl);
+        }
+        return;
+    }
+    // Hard limit is unlimited but soft is low: best-effort bump so singleton ORTE can fork helpers.
+    constexpr rlim_t k_target_soft = 262144;
+    if (rl.rlim_cur < k_target_soft) {
+        rl.rlim_cur = k_target_soft;
+        (void)setrlimit(RLIMIT_NPROC, &rl);
+    }
+}
+#endif
+
+// Default Open MPI / PRRTE MCA when nothing else set (mirrors tests/scripts/ompi_singleton_env.py). Flag 0 => no
+// override.
+void apply_singleton_mpi_bootstrap_env() {
+    if (const char* skip = std::getenv("TT_METAL_OMPI_SINGLETON_WORKAROUND")) {
+        if (skip[0] == '0' && skip[1] == '\0') {
+            return;
+        }
+    }
+    (void)::setenv("OMPI_MCA_plm", "isolated", 0);
+    (void)::setenv("PRTE_MCA_plm", "isolated", 0);
+    (void)::setenv("OMPI_MCA_plm_ssh_agent", "false", 0);
+    (void)::setenv("OMPI_MCA_plm_rsh_agent", "false", 0);
+}
 
 // `job_world_size` is MPI_COMM_WORLD (pre-split) rank count; used to validate TT_RUN_SUBCONTEXT_SIZES and
 // to build the single-context layout when TT_RUN_SUBCONTEXT_ID is unset.
@@ -244,6 +292,10 @@ inline void init_env(int& argc, char**& argv) {
     static std::once_flag mpi_once;
 
     std::call_once(mpi_once, [&] {
+#if defined(__linux__)
+        try_raise_rlimit_nproc();
+#endif
+        apply_singleton_mpi_bootstrap_env();
         int provided = 0;
         if (MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided) != MPI_SUCCESS) {
             TT_THROW("MPI_Init_thread failed");

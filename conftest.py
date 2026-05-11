@@ -2,11 +2,26 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import sys
+
+# Before imports that may load libOpenMPI / libtt_metal: limit ORTE fork storm in MPI singleton mode.
+_ttm_root = os.path.dirname(os.path.abspath(__file__))
+if _ttm_root not in sys.path:
+    sys.path.insert(0, _ttm_root)
+try:
+    from tests.scripts.ompi_singleton_env import apply_ompi_singleton_workaround_env
+
+    apply_ompi_singleton_workaround_env()
+except ImportError:
+    if os.environ.get("TT_METAL_OMPI_SINGLETON_WORKAROUND", "1") != "0":
+        os.environ.setdefault("OMPI_MCA_plm", "isolated")
+        os.environ.setdefault("PRTE_MCA_plm", "isolated")
+
 import contextlib
 import pytest
 import torch
 import random
-import os
 import numpy as np
 
 # Nanobind prints noisy "leaked types/functions" at interpreter exit when ttnn is imported

@@ -125,9 +125,7 @@ def print_findings(findings: list[Finding]) -> None:
         if f.suggested_fix:
             logger.opt(colors=True).info("<green>  Suggested fix:</green>")
             for fix_line in f.suggested_fix.splitlines():
-                logger.opt(colors=True).info(
-                    "<green>    {fix_line}</green>", fix_line=fix_line
-                )
+                logger.opt(colors=True).info("<green>    {fix_line}</green>", fix_line=fix_line)
 
     if blocking:
         logger.opt(colors=True).info(
@@ -154,9 +152,7 @@ def format_pr_comment(finding: Finding) -> str:
         finding.message,
     ]
     if finding.suggested_fix:
-        parts.append(
-            f"\n**Suggested fix:**\n```suggestion\n{finding.suggested_fix}\n```"
-        )
+        parts.append(f"\n**Suggested fix:**\n```suggestion\n{finding.suggested_fix}\n```")
     return "\n".join(parts)
 
 
@@ -197,8 +193,6 @@ def format_summary_comment(
         )
 
     if comment_failures:
-        lines.append(
-            f"\n> **Note:** {comment_failures} comment(s) could not be posted due to API errors."
-        )
+        lines.append(f"\n> **Note:** {comment_failures} comment(s) could not be posted due to API errors.")
 
     return "\n".join(lines)
