@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "llk_pack.h"
+#include "llk_pack_untilize.h"
 
 using ckernel::FACE_R_DIM;
 using ckernel::TILE_C_DIM;

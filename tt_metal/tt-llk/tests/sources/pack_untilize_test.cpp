@@ -119,6 +119,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
 #include "llk_pack.h"
 #include "llk_pack_common.h"
+#include "llk_pack_untilize.h"
 #include "params.h"
 
 constexpr std::uint32_t L1_ACCESS_ADDRESS_GRANULARITY = 16; // in bytes
