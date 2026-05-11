@@ -153,12 +153,13 @@ template <bool EN_IMPLIED_MATH_FORMAT, bool EN_FP32_DEST_FORMAT, bool EN_INT32_D
 inline void _configure_alu_formats_(DataFormat srcA_format, DataFormat srcB_format)
 {
     cfg[DISABLE_IMPLIED_SRCA_FMT_SEC0_Base_ADDR32 + TRISC_ID] = !EN_IMPLIED_MATH_FORMAT;
-
-    std::uint8_t SRCA_FORMAT_MASKED = static_cast<std::uint8_t>(srcA_format) & 0xFF;
-    std::uint8_t SRCB_FORMAT_MASKED = static_cast<std::uint8_t>(srcB_format) & 0xFF;
+    cfg[DISABLE_IMPLIED_SRCB_FMT_SEC0_Base_ADDR32 + TRISC_ID] = !EN_IMPLIED_MATH_FORMAT;
 
     if constexpr (!EN_IMPLIED_MATH_FORMAT)
     {
+        std::uint8_t SRCA_FORMAT_MASKED = to_underlying(srcA_format) & 0xFF;
+        std::uint8_t SRCB_FORMAT_MASKED = to_underlying(srcB_format) & 0xFF;
+
         cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_val_RMW, SRCA_FORMAT_MASKED);
         cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_override_RMW, 0x1);
         cfg_rmw(ALU_FORMAT_SPEC_REG_SrcB_val_RMW, SRCB_FORMAT_MASKED);
@@ -186,27 +187,29 @@ inline void _configure_alu_formats_(DataFormat srcA_format, DataFormat srcB_form
 template <bool EN_IMPLIED_MATH_FORMAT, bool EN_32BIT_DEST>
 inline void _configure_default_data_format_state_(DataFormat srcA_format, DataFormat srcB_format)
 {
-    if (data_format_config_set != DataFormatConfigSet::DEFAULT)
+    if (data_format_config_set == DataFormatConfigSet::DEFAULT)
     {
-        TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::WAIT_SFPU, p_stall::MATH);
-
-        const bool EN_FP32_DEST_FORMAT  = _is_src_fmt_fp32_dest_compatible_(srcA_format) && _is_src_fmt_fp32_dest_compatible_(srcB_format) && EN_32BIT_DEST;
-        const bool EN_INT32_DEST_FORMAT = _is_src_fmt_int32_dest_compatible_(srcA_format) && _is_src_fmt_int32_dest_compatible_(srcB_format) && EN_32BIT_DEST;
-        if (EN_FP32_DEST_FORMAT)
-        {
-            _configure_alu_formats_<EN_IMPLIED_MATH_FORMAT, true /* EN_FP32_DEST_FORMAT */, false /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
-        }
-        else if (EN_INT32_DEST_FORMAT)
-        {
-            _configure_alu_formats_<EN_IMPLIED_MATH_FORMAT, false /* EN_FP32_DEST_FORMAT */, true /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
-        }
-        else
-        {
-            _configure_alu_formats_<EN_IMPLIED_MATH_FORMAT, false /* EN_FP32_DEST_FORMAT */, false /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
-        }
-
-        data_format_config_set = DataFormatConfigSet::DEFAULT;
+        return;
     }
+
+    TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::WAIT_SFPU, p_stall::MATH);
+
+    const bool EN_FP32_DEST_FORMAT  = _is_src_fmt_fp32_dest_compatible_(srcA_format) && _is_src_fmt_fp32_dest_compatible_(srcB_format) && EN_32BIT_DEST;
+    const bool EN_INT32_DEST_FORMAT = _is_src_fmt_int32_dest_compatible_(srcA_format) && _is_src_fmt_int32_dest_compatible_(srcB_format) && EN_32BIT_DEST;
+    if (EN_FP32_DEST_FORMAT)
+    {
+        _configure_alu_formats_<EN_IMPLIED_MATH_FORMAT, true /* EN_FP32_DEST_FORMAT */, false /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
+    }
+    else if (EN_INT32_DEST_FORMAT)
+    {
+        _configure_alu_formats_<EN_IMPLIED_MATH_FORMAT, false /* EN_FP32_DEST_FORMAT */, true /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
+    }
+    else
+    {
+        _configure_alu_formats_<EN_IMPLIED_MATH_FORMAT, false /* EN_FP32_DEST_FORMAT */, false /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
+    }
+
+    data_format_config_set = DataFormatConfigSet::DEFAULT;
 }
 
 /**
@@ -221,14 +224,15 @@ inline void _configure_default_data_format_state_(DataFormat srcA_format, DataFo
  */
 inline void _configure_mov_src2dst_32bit_ops_data_format_state_(DataFormat srcA_format, DataFormat srcB_format)
 {
-    if (data_format_config_set != DataFormatConfigSet::MOV_SRC2DST_32BIT_OPS)
+    if (data_format_config_set == DataFormatConfigSet::MOV_SRC2DST_32BIT_OPS)
     {
-        TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::WAIT_SFPU, p_stall::MATH);
-
-        _configure_alu_formats_<false /* EN_IMPLIED_MATH_FORMAT */, true /* EN_FP32_DEST_FORMAT */, false /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
-
-        data_format_config_set = DataFormatConfigSet::MOV_SRC2DST_32BIT_OPS;
+        return;
     }
+    TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::WAIT_SFPU, p_stall::MATH);
+
+    _configure_alu_formats_<false /* EN_IMPLIED_MATH_FORMAT */, true /* EN_FP32_DEST_FORMAT */, false /* EN_INT32_DEST_FORMAT */>(srcA_format, srcB_format);
+
+    data_format_config_set = DataFormatConfigSet::MOV_SRC2DST_32BIT_OPS;
 }
 
 /**

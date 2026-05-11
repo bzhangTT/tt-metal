@@ -64,7 +64,7 @@ typedef union
 } alu_config_u;
 
 // List of possible data format config states
-enum DataFormatConfigSet : std::uint8_t
+enum class DataFormatConfigSet : std::uint8_t
 {
     UNCONFIGURED          = 0,
     DEFAULT               = 1,
