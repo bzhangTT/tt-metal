@@ -66,6 +66,7 @@ inline std::uint32_t get_output_tile_address(std::uint8_t output_id, std::uint32
     } else {
         if constexpr (untilize) {
             // FIXME: Need to support pack-untilize?
+            static_assert(!untilize, "Use llk_pack_untilize APIs for pack-untilize.");
             // std::uint16_t out_tile_index =
             // (get_local_cb_interface(output_id).ublock_tile_cnt/get_local_cb_interface(output_id).ublock_ct)*get_local_cb_interface(output_id).row_tile_dim
             // +

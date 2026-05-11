@@ -64,6 +64,7 @@ inline std::uint32_t get_output_tile_address(std::uint8_t output_id, std::uint32
     } else {
         if constexpr (untilize) {
             // TODO: uplift this option from BBE
+            static_assert(!untilize, "Use llk_pack_untilize APIs for pack-untilize.");
         } else {
             pack_tile_addr =
                 get_local_cb_interface(output_id).fifo_wr_ptr + get_local_cb_interface(output_id).fifo_wr_tile_ptr - 1;
