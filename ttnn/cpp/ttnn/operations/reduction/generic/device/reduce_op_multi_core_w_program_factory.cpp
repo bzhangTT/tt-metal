@@ -105,7 +105,8 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
     // Int32 max/min uses reduce_sfpu (GMPOOL is invalid for Int32 on device; issue #26726).
     // MIN is lowered to MAX + negate before launch; math_op here is always MAX for that path.
     const bool use_sfpu_int32_path = a.dtype() == DataType::INT32 && operation_attributes.math_op == ReduceOpMath::MAX;
-    // GMPOOL reduce_w_neg (not reduce_sfpu): acc/ineg scratch CBs when negating.
+    // GMPOOL reduce_w_neg needs acc/ineg scratch CBs;
+    // reduce_sfpu_w_neg negates in DST and needs neither.
     const bool use_fpu_negate = operation_attributes.negate && !use_sfpu_int32_path;
 
     tt_metal::Buffer* src_buffer = a.buffer();
@@ -149,9 +150,6 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
 
     if (use_sfpu_int32_path) {
         reduce_defines["REDUCE_FORMAT"] = "DataFormat::Int32";
-        if (operation_attributes.negate) {
-            reduce_defines["REDUCE_NEGATE"] = "1";
-        }
     }
 
     KernelDescriptor reader_desc;
@@ -181,10 +179,8 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
     };
 
     const std::string compute_kernel =
-        use_sfpu_int32_path
-            ? std::string("ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/compute/reduce_sfpu.cpp")
-            : std::string("ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/compute/reduce") +
-                  (operation_attributes.negate ? "_w_neg" : "") + ".cpp";
+        std::string("ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/compute/") +
+        (use_sfpu_int32_path ? "reduce_sfpu" : "reduce") + (operation_attributes.negate ? "_w_neg" : "") + ".cpp";
 
     KernelDescriptor compute_desc_g1;
     compute_desc_g1.kernel_source = compute_kernel;
