@@ -102,11 +102,8 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
     const bool use_post_mul = operation_attributes.post_mul_scaler != 1.0f;
     uint32_t post_mul_scaler_bits = std::bit_cast<uint32_t>(operation_attributes.post_mul_scaler);
 
-    // Int32 max/min uses reduce_sfpu (GMPOOL is invalid for Int32 on device; issue #26726).
-    // MIN is lowered to MAX + negate before launch; math_op here is always MAX for that path.
+    // Int32 max/min uses SFPU reduce path
     const bool use_sfpu_int32_path = a.dtype() == DataType::INT32 && operation_attributes.math_op == ReduceOpMath::MAX;
-    // GMPOOL reduce_w_neg needs acc/ineg scratch CBs;
-    // reduce_sfpu_w_neg negates in DST and needs neither.
     const bool use_fpu_negate = operation_attributes.negate && !use_sfpu_int32_path;
 
     tt_metal::Buffer* src_buffer = a.buffer();

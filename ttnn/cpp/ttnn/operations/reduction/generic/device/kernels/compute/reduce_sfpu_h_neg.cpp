@@ -37,13 +37,13 @@ void kernel_main() {
     constexpr uint32_t cb_output = tt::CBIndex::c_3;
 
     constexpr uint32_t onetile = 1;
-    constexpr uint32_t acc_dst = 0;   // running -max(-x) accumulator
-    constexpr uint32_t work_dst = 1;  // staging slot for each subsequent input tile
+    constexpr uint32_t acc_dst = 0;
+    constexpr uint32_t work_dst = 1;
 
     init_sfpu(cb_input, cb_output);
     copy_tile_to_dst_init_short(cb_input);
 
-    cb_wait_front(cb_scaler, onetile);  // scaler tile from reader; sfpu_reduce doesn't use it
+    cb_wait_front(cb_scaler, onetile);
 
     PACK((llk_pack_reduce_mask_config<false /*untilize*/, REDUCE_DIM>()));
 
@@ -67,7 +67,7 @@ void kernel_main() {
                 copy_tile(cb_input, 0, work_dst);
                 negative_tile_init();
                 negative_tile_int32(work_dst);
-                binary_max_int32_tile_init();  // re-init: negate reprogrammed SFPCONFIG
+                binary_max_int32_tile_init();
                 binary_max_int32_tile(acc_dst, work_dst, acc_dst);
                 cb_pop_front(cb_input, onetile);
             }

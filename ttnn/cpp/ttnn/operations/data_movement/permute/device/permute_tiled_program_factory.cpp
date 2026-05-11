@@ -360,7 +360,6 @@ PermuteDeviceOperation::MultiCoreTileRowInvariant::create(
         uint32_t num_packed_values = sizeof(uint32_t) / element_size;
         num_writes = face_shape[1] / num_packed_values;
         switch (input_tensor.dtype()) {
-            // INT32 callers bit-encode the sentinel into pad_value (see ttnn::reduce).
             case DataType::INT32: padding_val_packed = std::bit_cast<uint32_t>(pad_value); break;
             case DataType::UINT32: padding_val_packed = pad_value; break;
             case DataType::BFLOAT16:
@@ -656,7 +655,6 @@ PermuteDeviceOperation::MultiCoreTiledGeneric::cached_program_t PermuteDeviceOpe
         num_writes = face_shape[1] / num_packed_values;
 
         switch (input_tensor.dtype()) {
-            // INT32 callers bit-encode the sentinel into pad_value (see ttnn::reduce).
             case DataType::INT32: padding_val_packed = std::bit_cast<uint32_t>(pad_value); break;
             case DataType::UINT32: padding_val_packed = pad_value; break;
             case DataType::BFLOAT16:
