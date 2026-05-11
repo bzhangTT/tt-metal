@@ -11,6 +11,7 @@
 #include "ttnn/operations/eltwise/unary/unary.hpp"
 #include "ttnn/operations/copy/typecast/typecast.hpp"
 #include "ttnn/operations/core/core.hpp"
+#include "ttnn/graph/composite_trace.hpp"
 
 // Implementation macros for binary operations (must match declarations in binary.hpp)
 #define TTNN_BINARY_OP_TENSOR_TENSOR_IMPL(NAME, OP_TYPE)                             \
@@ -24,6 +25,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,  \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,  \
         const std::optional<CoreRangeSet>& sub_core_grids) {                         \
+        TT_OP_SCOPE("ttnn::" #NAME, lhs, rhs);                                       \
         return ttnn::detail::invoke_binary_ng(                                       \
             lhs,                                                                     \
             rhs,                                                                     \
@@ -49,6 +51,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,  \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,  \
         const std::optional<CoreRangeSet>& sub_core_grids) {                         \
+        TT_OP_SCOPE("ttnn::" #NAME, lhs);                                            \
         return ttnn::detail::invoke_binary_ng(                                       \
             lhs,                                                                     \
             rhs,                                                                     \
@@ -71,6 +74,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,  \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,  \
         const std::optional<CoreRangeSet>& sub_core_grids) {                         \
+        TT_OP_SCOPE("ttnn::" #NAME, lhs, rhs);                                       \
         return ttnn::detail::invoke_binary_ng(                                       \
             lhs,                                                                     \
             rhs,                                                                     \
@@ -91,6 +95,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,  \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,  \
         const std::optional<CoreRangeSet>& sub_core_grids) {                         \
+        TT_OP_SCOPE("ttnn::" #NAME);                                                 \
         return ttnn::detail::invoke_binary_ng(                                       \
             lhs,                                                                     \
             rhs,                                                                     \
@@ -113,6 +118,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,                      \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,                      \
         const std::optional<CoreRangeSet>& sub_core_grids) {                                             \
+        TT_OP_SCOPE("ttnn::" #NAME, lhs, rhs);                                                           \
         return operations::binary::inplace_relational_binary<operations::binary::BinaryOpType::OP_TYPE>( \
             lhs, rhs, post_activations, lhs_activations, rhs_activations, sub_core_grids);               \
     }                                                                                                    \
@@ -123,6 +129,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,                      \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,                      \
         const std::optional<CoreRangeSet>& sub_core_grids) {                                             \
+        TT_OP_SCOPE("ttnn::" #NAME, lhs);                                                                \
         return operations::binary::inplace_relational_binary<operations::binary::BinaryOpType::OP_TYPE>( \
             lhs, rhs, post_activations, lhs_activations, rhs_activations, sub_core_grids);               \
     }
@@ -135,6 +142,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,  \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,  \
         const std::optional<CoreRangeSet>& sub_core_grids) {                         \
+        TT_OP_SCOPE("ttnn::" #NAME, lhs, rhs);                                       \
         return ttnn::detail::invoke_binary_ng(                                       \
             lhs,                                                                     \
             rhs,                                                                     \
@@ -155,6 +163,7 @@
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> lhs_activations,  \
         ttsl::Span<const operations::unary::EltwiseUnaryWithParam> rhs_activations,  \
         const std::optional<CoreRangeSet>& sub_core_grids) {                         \
+        TT_OP_SCOPE("ttnn::" #NAME);                                                 \
         return ttnn::detail::invoke_binary_ng(                                       \
             lhs,                                                                     \
             rhs,                                                                     \
