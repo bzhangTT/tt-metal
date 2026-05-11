@@ -100,10 +100,10 @@ inline void llk_unpack_A(const std::uint32_t operand, const std::uint32_t tile_i
         // (MATH_PACK < max). Combined this keeps unpack within N iterations of pack.
         _llk_sync_wait_<p_stall::STALL_UNPACK>(semaphore::MATH_PACK,   p_stall::STALL_ON_MAX);
         _llk_sync_wait_<p_stall::STALL_UNPACK>(semaphore::UNPACK_MATH, p_stall::STALL_ON_MAX);
-        
+
         // Drain UNPACK0 before posting "filled" so the post does not race the writes math reads.
         _llk_unpack_unary_operand_<p_unpacr::UNP_DEST>(l1_tile_index);
-        _llk_sync_post_<p_stall::UNPACK0>(semaphore::UNPACK_MATH); 
+        _llk_sync_post_<p_stall::UNPACK0>(semaphore::UNPACK_MATH);
 
         if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
             _llk_sync_advance_dest_section_<ckernel::unpack::TRISC_ID, true /*EN_32BIT_DEST*/, p_stall::UNPACK0>();

@@ -7,7 +7,7 @@
 #include <cstdint>
 
 #include "ckernel_trisc_common.h"
-#include "cmath_common.h" 
+#include "cmath_common.h"
 #include "cunpack_common.h"
 using namespace ckernel;
 using namespace ckernel::trisc;

@@ -168,4 +168,3 @@ inline void _llk_math_dest_section_done_()
         _set_dest_section_base_<TRISC_ID>(base_addr);
     }
 }
-

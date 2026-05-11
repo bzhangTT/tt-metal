@@ -152,7 +152,7 @@ inline void llk_math_pack_sync_init() {
     // Math owns sem init for the entire dest-bank chain. MATH_PACK is always inited;
     // UNPACK_MATH is inited additionally in the unpack-to-dest path.
     _llk_math_pack_sync_init_<DST_SYNC_MODE>();
-    
+
     const std::uint32_t dst_format = unpack_dst_format[0];
     if (dst_format == (std::uint32_t)DataFormat::Float32 ||
         dst_format == (std::uint32_t)DataFormat::Int32) {

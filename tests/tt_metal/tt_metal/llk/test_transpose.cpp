@@ -102,10 +102,7 @@ void validate_transpose_wh(
 }
 
 void validate_transpose_wh_32b(
-    const std::vector<uint32_t>& src_vec,
-    const std::vector<uint32_t>& shape,
-    const std::vector<uint32_t>& result_vec) {
-    
+    const std::vector<uint32_t>& src_vec, const std::vector<uint32_t>& shape, const std::vector<uint32_t>& result_vec) {
     TT_FATAL(shape.size() == 4, "Error");
 
     // Untile input: TILED_NFACES -> LIN_ROW_MAJOR (32-bit datums).
