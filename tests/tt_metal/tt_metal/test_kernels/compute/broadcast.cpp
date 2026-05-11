@@ -5,7 +5,7 @@
 #include <cstdint>
 #include "api/compute/bcast.h"
 #include "api/compute/eltwise_binary.h"
-#include "experimental/circular_buffer.h"
+#include "api/dataflow/circular_buffer.h"
 
 #ifndef BCAST_ROW_IDX
 #define BCAST_ROW_IDX 0
@@ -21,9 +21,9 @@ void kernel_main() {
     BCAST_OP_INIT(tt::CBIndex::c_0, tt::CBIndex::c_1);
 #endif
 
-    experimental::CircularBuffer cb1(tt::CBIndex::c_1);
-    experimental::CircularBuffer cb16(tt::CBIndex::c_16);
-    experimental::CircularBuffer cb0(tt::CBIndex::c_0);
+    CircularBuffer cb1(tt::CBIndex::c_1);
+    CircularBuffer cb16(tt::CBIndex::c_16);
+    CircularBuffer cb0(tt::CBIndex::c_0);
 
     cb1.wait_front(onetile);
     cb16.reserve_back(onetile);
