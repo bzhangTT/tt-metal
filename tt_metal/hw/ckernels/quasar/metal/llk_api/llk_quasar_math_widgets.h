@@ -15,5 +15,5 @@
  **/
 template <std::uint8_t SET_DEST_DVALID>
 inline void llk_math_set_dvalid() {
-    _llk_math_set_dvalid_<SET_DEST_DVALID>();
+    _llk_math_set_dvalid_<SET_DEST_DVALID, DST_SYNC_MODE>();
 }
