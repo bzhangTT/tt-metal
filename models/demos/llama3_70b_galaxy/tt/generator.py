@@ -444,6 +444,8 @@ class Generator(WarmupForwardMixin):
         # - return_logits=False: produce next-token ids; we only run on-device sampling when logits are not requested
         save_logits_to_host = tt_out_logits_all_users is not None
         do_device_sampling = (not return_logits) and (not save_logits_to_host)
+        if not do_device_sampling:
+            self._decode_sampling_seed_state_valid = False
 
         # Accumulate sharded logits (same format as decode, before all-gather) for on-device sampling.
         all_users = [0] if use_batched_prefill else empty_slots
@@ -616,6 +618,7 @@ class Generator(WarmupForwardMixin):
             sampling_module.reset_output_state()
             sampling_module.seed_manager.reset_seed(sampling_params.seed, empty_slots)
             sampling_module.seed_manager.get_new_values(empty_slots)
+            self._decode_sampling_seed_state_valid = True
             tt_sampled, tt_log_probs = sampling_module.sample(
                 tt_logits_batch,
                 tt_out_tok=None,
@@ -1052,6 +1055,7 @@ class Generator(WarmupForwardMixin):
         if sampling_params is None:
             return_logits = True
             reset_inputs = True  # We didn't sample on device, so we need to load inputs.
+            self._decode_sampling_seed_state_valid = False
         else:
             return_logits = False
 
@@ -1117,11 +1121,15 @@ class Generator(WarmupForwardMixin):
             if reset_batch:
                 sampling_module.reset_prompt_tokens(prompt_tokens)
                 sampling_module.reset_output_state(output_tokens)
-                if not had_prefill_sampling:
+                # vLLM also raises reset_batch for decode-slot condense. In
+                # that case slot_remap already moved the RNG state; resetting
+                # from the user seed would restart seeded requests mid-output.
+                if not had_prefill_sampling and not getattr(self, "_decode_sampling_seed_state_valid", False):
                     sampling_module.seed_manager.reset_seed(
                         sampling_params.seed,
                         list(range(self.model_args.max_batch_size)),
                     )
+                    self._decode_sampling_seed_state_valid = True
         self.model.sampling.seed_manager.get_new_values(active_seed_slots)
 
         if tt_out_logits_saved is not None:
