@@ -15,7 +15,13 @@ sfpi_inline void load_value_param_float(uint value) { sfpi::vConstIntPrgm0 = val
 template <bool IS_MAX_OP>
 sfpi_inline void calculate_unary_max_min_float_body(
     std::uint32_t dst_index_in, std::uint32_t dst_index_out, int load_offset = 0) {
-    TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, load_offset);
+    int store_offset = (dst_index_out - dst_index_in) * 32;
+    sfpi::l_reg[sfpi::LRegs::LReg0].in_use();
+    if (load_offset != 0) {
+        TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, load_offset);
+    } else {
+        TTI_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, 0);
+    }
 
     if constexpr (IS_MAX_OP) {
         // L0 = max(L0, constant); this will only write to L0 since L12 is a constant register.
@@ -24,7 +30,11 @@ sfpi_inline void calculate_unary_max_min_float_body(
         // L0 = min(L0, constant); this will only write to L0 since L12 is a constant register.
         TTI_SFPSWAP(0, p_sfpu::LREG12, p_sfpu::LREG0, sfpi::SFPSWAP_MOD1_VEC_MIN_MAX);
     }
-    TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+    if (store_offset != 0) {
+        TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, store_offset);
+    } else {
+        TTI_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, 0);
+    }
 }
 
 template <bool IS_MAX_OP = true, bool APPROXIMATION_MODE, int ITERATIONS = 8>
@@ -72,7 +82,13 @@ sfpi_inline void load_value_param_int(uint value) {
 template <bool IS_MAX_OP, bool IS_UNSIGNED = false>
 sfpi_inline void calculate_unary_max_min_int32_body(
     std::uint32_t dst_index_in, std::uint32_t dst_index_out, uint value, int load_offset = 0) {
-    TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_7, load_offset);
+    int store_offset = (dst_index_out - dst_index_in) * 32;
+    sfpi::l_reg[sfpi::LRegs::LReg0].in_use();
+    if (load_offset != 0) {
+        TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_7, load_offset);
+    } else {
+        TTI_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_7, 0);
+    }
 
     if (IS_UNSIGNED ^ ((int)value >= 0)) {
         // if msb(value) == 0, we can safely use SFPSWAP even though it expects sign-magnitude integers
@@ -91,7 +107,11 @@ sfpi_inline void calculate_unary_max_min_int32_body(
             IS_MAX_OP ^ IS_UNSIGNED ? sfpi::SFPSWAP_MOD1_VEC_MIN_MAX : 9);  // mod1=9 means set VD=max and VC=min
         TTI_SFPNOT(0, p_sfpu::LREG0, p_sfpu::LREG0, 0);
     }
-    TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+    if (store_offset != 0) {
+        TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_7, store_offset);
+    } else {
+        TTI_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_7, 0);
+    }
 }
 
 template <bool IS_MAX_OP = true, bool IS_UNSIGNED = false, bool APPROXIMATION_MODE, int ITERATIONS = 8>
