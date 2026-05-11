@@ -295,6 +295,11 @@ class SamplingGenerator:
     ):
         if penalties_on:
             logits = self.tt_penalties.apply(logits)
+            # Penalties update the decode logits in-place, then sampling
+            # immediately consumes those logits through top-k/all-gather. Keep
+            # a real device boundary here so deterministic penalty batches do
+            # not occasionally sample one row from partially updated logits.
+            ttnn.synchronize_device(self.mesh_device)
         tt_tokens, tt_log_probs = self.tt_sampling(logits, tt_out_tok=tt_out_tok)
         return tt_tokens, tt_log_probs
 

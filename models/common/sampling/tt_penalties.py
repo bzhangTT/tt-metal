@@ -273,7 +273,13 @@ class TTPenalties(LightweightModule):
         )
 
         # THEN optionally repopulate if tokens are provided
-        if tokens is not None:
+        if tokens is None:
+            # Reset is normally followed immediately by decode. Make the
+            # zeroed penalty state visible before the next logits pass starts;
+            # otherwise long-running servers can occasionally reuse one stale
+            # row from the previous request batch.
+            ttnn.synchronize_device(self.mesh_device)
+        else:
             # Mask out padding positions (-1) instead of inventing a fake token id by expanding vocab_size.
             tokens_2d = tokens.reshape(-1, tokens.shape[-1])
             tokens_2d = self._pad_batch_to_max(tokens_2d, pad_value=-1)
