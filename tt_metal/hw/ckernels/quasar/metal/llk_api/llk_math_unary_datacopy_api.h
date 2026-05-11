@@ -25,8 +25,9 @@ template <DataCopyType type, bool IS_32b_DEST_EN>
 inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand) {
     const std::uint32_t operand_id = get_operand_id(operand);
 
-    // In unpack-to-dest mode the math thread sits out, unpacker writes to
-    // dest directly. Skip math init datacopy.
+    // Unpack-to-dest writes dest directly via UNP_DEST, so the srcA→dest datacopy
+    // is a no-op here. Math still participates in the sync chain via
+    // tile_regs_acquire/commit (see llk_math_common_api.h).
     const std::uint32_t dst_format = unpack_dst_format[operand_id];
     if (dst_format == (std::uint32_t)DataFormat::Float32 ||
         dst_format == (std::uint32_t)DataFormat::Int32) {

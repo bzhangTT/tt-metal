@@ -71,11 +71,10 @@ inline void llk_pack_init(const std::uint32_t pack_output) {
 
     _llk_pack_init_(output_id);
 
-    // 32-bit unpack-to-dest path: PACR addresses dest via SEC{pack::TRISC_ID}_Offset
+    // 32-bit unpack-to-dest path: PACR addresses dest via SEC{pack::TRISC_ID}_Offset.
     // Initialize the section base to bank 0 for SyncHalf so the first PACR reads bank 0.
-    const std::uint32_t in0_dst_format = pack_dst_format[0];
-    if (in0_dst_format == (std::uint32_t)DataFormat::Float32 ||
-        in0_dst_format == (std::uint32_t)DataFormat::Int32) {
+    const std::uint32_t dst_format = pack_dst_format[output_id];
+    if (dst_format == (std::uint32_t)DataFormat::Float32 || dst_format == (std::uint32_t)DataFormat::Int32) {
         if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
             _reset_dest_register_offset_();
             _set_dest_section_base_<ckernel::pack::TRISC_ID>(_get_dest_buffer_base_());

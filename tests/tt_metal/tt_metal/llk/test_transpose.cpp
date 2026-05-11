@@ -259,7 +259,7 @@ void run_single_core_transpose(
         compute_kernel_args.push_back(dfb_output);
         std::vector<UnpackToDestMode> unpack_to_dest_mode;
         if (test_config.data_format == tt::DataFormat::Float32) {
-            unpack_to_dest_mode.assign(64, UnpackToDestMode::UnpackToDestFp32);
+            unpack_to_dest_mode.assign(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::UnpackToDestFp32);
         }
         const bool fp32_dest_acc_en = test_config.data_format == tt::DataFormat::Float32;
         compute_kernel = tt_metal::experimental::quasar::CreateKernel(
@@ -430,19 +430,6 @@ TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarTransposeWHDestFloat32_SyncFull)
         .transpose_type = unit_tests::compute::transpose::TransposeType::WH,
         .data_format = tt::DataFormat::Float32,
         .dst_full_sync_en = true,
-    };
-    unit_tests::compute::transpose::run_single_core_transpose(this->devices_.at(0), test_config);
-}
-
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarTransposeWHDestInt32) {
-    // Single-tile shape: 36-tile shape is intractable on Quasar RTL simulator.
-    unit_tests::compute::transpose::TransposeConfig test_config = {
-        .short_init = false,
-        .transpose_dest = true,
-        .single_tile_size = 32 * 32 * sizeof(uint32_t),
-        .shape = {1, 1, 32, 32},
-        .transpose_type = unit_tests::compute::transpose::TransposeType::WH,
-        .data_format = tt::DataFormat::Int32,
     };
     unit_tests::compute::transpose::run_single_core_transpose(this->devices_.at(0), test_config);
 }

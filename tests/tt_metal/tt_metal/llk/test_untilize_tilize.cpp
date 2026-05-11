@@ -634,13 +634,13 @@ static void run_quasar_tilize_untilize_test(
         }
     }
 
-    // For Float32 input, need UnpackToDestFp32 so unpack_dst_format[0]
+    // For Float32 input, need UnpackToDestFp32 so unpack_dst_format[id]
     // is reported as Float32 (otherwise the JIT downconverts to fp16 by default
     // and llk_math_hw_configure / llk_unpack_tilize_init never take the 32-bit
     // unpack-to-dest branch).
     std::vector<UnpackToDestMode> unpack_to_dest_mode;
     if (data_format == tt::DataFormat::Float32) {
-        unpack_to_dest_mode.assign(64, UnpackToDestMode::UnpackToDestFp32);
+        unpack_to_dest_mode.assign(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::UnpackToDestFp32);
     }
 
     KernelHandle compute = CreateKernel(

@@ -60,6 +60,12 @@ inline void llk_unpack_A_init(
 
     static_assert(acc_to_dest == false, "acc_to_dest is not yet supported on Quasar");
     static_assert(BType == BroadcastType::NONE, "Only BroadcastType::NONE is supported on Quasar right now");
+    // Unpack-to-dest on Quasar is reached via the simple llk_unpack_A_init<TRANSPOSE_EN, IS_32b_DEST_EN>
+    // overload above, which runtime-branches on unpack_dst_format. This BH/WH-signature overload exists
+    // for API compatibility and does not honor unpack_to_dest; assert against silent misuse.
+    static_assert(
+        unpack_to_dest == false,
+        "unpack_to_dest=true is not supported on this overload on Quasar; use the simple overload");
 
     // TODO (tt-metal #42916): Once runtime asserts are added, add asserts for unsupported features above and for valid
     // transpose_of_faces and within_face_16x16_transpose values
@@ -133,6 +139,12 @@ inline void llk_unpack_A(const std::uint32_t operand, const std::uint32_t tile_i
 
     static_assert(acc_to_dest == false, "acc_to_dest is not yet supported on Quasar");
     static_assert(BType == BroadcastType::NONE, "Only BroadcastType::NONE is supported on Quasar right now");
+    // Unpack-to-dest on Quasar is reached via the simple llk_unpack_A(operand, tile_index) overload
+    // above, which runtime-branches on unpack_dst_format. This BH/WH-signature overload exists for
+    // API compatibility and does not honor unpack_to_dest; assert against silent misuse.
+    static_assert(
+        unpack_to_dest == false,
+        "unpack_to_dest=true is not supported on this overload on Quasar; use the simple overload");
 
     WAYPOINT("UPAW");
     // For Quasar, the unp_sel field is ignored if binary_reuse_dest != EltwiseBinaryReuseDestType::NONE
