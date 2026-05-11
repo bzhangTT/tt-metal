@@ -48,3 +48,35 @@ def test_max_min_int32(device, input_shape, dim, op):
 
     assert output_tensor.dtype == torch.int32, f"Expected int32 output, got {output_tensor.dtype}"
     assert_equal(output_tensor, torch_output_tensor)
+
+
+# Post-multiplication scaling on the SFPU Int32 path.
+# ttnn applies the scalar AFTER the reduce (mul_unary_tile in DST, then pack back to int32),
+# flipping max<->min for negative scalars so the user-visible semantic matches "scale-the-input":
+#   ttnn.max(x, scalar=s) == max(s * x)  (= s * min(x) when s < 0).
+# Reference therefore scales the input in float and then reduces, matching torch's natural idiom.
+@pytest.mark.parametrize("scale", [2.0, 0.5, -3.0])
+@pytest.mark.parametrize(
+    "input_shape, dim",
+    [
+        ((1, 2, 64, 64), -1),  # W-axis reduce, multi-batch
+        ((1, 1, 96, 64), -2),  # H-axis reduce, multi-tile H
+        ((1, 1, 64, 64), (-1, -2)),  # HW reduce via W-then-H decomposition
+    ],
+)
+@pytest.mark.parametrize("op", ["max", "min"])
+def test_max_min_int32_with_scaling(device, input_shape, dim, op, scale):
+    torch.manual_seed(0)
+    torch_input_tensor = torch.randint(-50_000, 50_000, input_shape, dtype=torch.int32)
+
+    torch_op = torch.amax if op == "max" else torch.amin
+    ttnn_op = ttnn.max if op == "max" else ttnn.min
+
+    torch_expected = torch_op(torch_input_tensor.float() * scale, dim=dim).to(torch.int32)
+
+    input_tensor = ttnn.from_torch(torch_input_tensor, layout=ttnn.TILE_LAYOUT, device=device, dtype=ttnn.int32)
+    output_tensor = ttnn_op(input_tensor, dim=dim, scalar=scale)
+    output_tensor = ttnn.to_torch(output_tensor)
+
+    assert output_tensor.dtype == torch.int32, f"Expected int32 output, got {output_tensor.dtype}"
+    assert_equal(output_tensor, torch_expected)
