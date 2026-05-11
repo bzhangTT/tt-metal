@@ -188,7 +188,8 @@ void kernel_main() {
     // Sentinel-terminated fabric send loop
     while (true) {
         cb_wait_front(cb_route_info_id, 1);
-        volatile uint32_t* route_info = (volatile uint32_t*)(get_read_ptr(cb_route_info_id));
+        volatile tt_l1_ptr uint32_t* route_info =
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_route_info_id));
 
         uint32_t route = route_info[0];
         if (route == ROUTE_INFO_SENTINEL) {
