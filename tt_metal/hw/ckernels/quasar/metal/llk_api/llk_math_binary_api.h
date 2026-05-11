@@ -63,12 +63,12 @@ inline void llk_math_eltwise_binary_init_with_operands(
 
     const std::uint32_t operandA_id = get_operand_id(operand_A);
     const std::uint32_t operandB_id = get_operand_id(operand_B);
+    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operandA_id);
     const DataFormat srcA_format = static_cast<DataFormat>(get_operand_dst_format(operandA_id));
     const DataFormat srcB_format = static_cast<DataFormat>(get_operand_dst_format(operandB_id));
 
     _configure_default_data_format_state_<false /* IMPLIED_MATH_FORMAT */, DST_ACCUM_MODE>(srcA_format, srcB_format);
-    _llk_math_eltwise_binary_init_<eltwise_binary_type, math_fidelity, binary_reuse_dest>(
-        ckernel::DEFAULT_TENSOR_SHAPE, acc_to_dest);
+    _llk_math_eltwise_binary_init_<eltwise_binary_type, math_fidelity, binary_reuse_dest>(tensor_shape_A, acc_to_dest);
 }
 
 /**
