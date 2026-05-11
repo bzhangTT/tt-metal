@@ -347,6 +347,7 @@ class TtMoe(LightweightModule):
         self,
         x: ttnn.Tensor,
         return_intermediates: bool = False,
+        read_profiler: bool = False,
     ) -> tuple[ttnn.Tensor, Optional[TtMoEIntermediates]]:
         """
         Forward pass through the full MoE pipeline.
@@ -356,6 +357,8 @@ class TtMoe(LightweightModule):
                - For 2D mesh: sharded dims=(0, -1) - dim 0 across axis 0, dim -1 across axis 1
                - Shape per device: (dispatch_group_size/axis0, seq_len_per_chip, emb_dim/axis1)
             return_intermediates: If True, return intermediate tensors for debugging
+            read_profiler: If True, read TTNN device profiler between major stages to
+                           avoid Tracy buffer overflow when profiling.
 
         Returns:
             Tuple of (final_output, intermediates):
@@ -413,6 +416,9 @@ class TtMoe(LightweightModule):
         logger.debug(f"  {scores.shape=} {scores.memory_config()=}")
         logger.debug(f"  {indices.shape=} {indices.memory_config()=}")
 
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
+
         # ========================================
         # Step 0: All-gather x to get full emb_dim (replicated across TP axis)
         # ========================================
@@ -429,6 +435,9 @@ class TtMoe(LightweightModule):
             )
         logger.debug(f"[TtMoe.forward] x (after all_gather) shape: {x.shape}")
 
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
+
         # ========================================
         # Step 1: Shared expert (enabled)
         # ========================================
@@ -438,6 +447,9 @@ class TtMoe(LightweightModule):
 
         shared_output = self.shared_expert(x)
         logger.debug(f"[TtMoe.forward] Shared expert output shape: {shared_output.shape}")
+
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
 
         # ========================================
         # Step 2: Dispatch (enabled)
@@ -455,6 +467,9 @@ class TtMoe(LightweightModule):
         scores = ttnn.to_memory_config(scores, ttnn.DRAM_MEMORY_CONFIG)
         indices = ttnn.to_memory_config(indices, ttnn.DRAM_MEMORY_CONFIG)
         logger.debug(f"[TtMoe.forward] Dispatch output: buffer={dispatched_buffer.shape}, metadata={metadata.shape}")
+
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
 
         # ========================================
         # Step 3: Routed experts (enabled)
@@ -486,6 +501,9 @@ class TtMoe(LightweightModule):
         expert_outputs = ttnn.unsqueeze(expert_outputs, dim=0)
         logger.debug(f"[TtMoe.forward] expert_outputs (unsqueezed) shape: {expert_outputs.shape}")
 
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
+
         # ========================================
         # Step 4: Combine (enabled)
         # ========================================
@@ -499,6 +517,9 @@ class TtMoe(LightweightModule):
             tt_expert_region_offsets,
         )
         logger.debug(f"[TtMoe.forward] combined_output shape: {combined_output.shape} {combined_output.dtype=}")
+
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
 
         # ========================================
         # Step 5: Reduce (fused weighted sum over topk + reduce-scatter for TP sharding)
@@ -522,6 +543,9 @@ class TtMoe(LightweightModule):
         routed_output = ttnn.squeeze(routed_output, dim=0)
         logger.debug(f"[TtMoe.forward] routed_output (squeezed) shape: {routed_output.shape}")
 
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
+
         # ========================================
         # Step 6: Final output
         # ========================================
@@ -529,6 +553,9 @@ class TtMoe(LightweightModule):
         # Both should be in TILE_LAYOUT with shape (dispatch_group_size, seq_len_per_chip, emb_dim)
         final_output = ttnn.add(routed_output, shared_output)
         logger.debug(f"[TtMoe.forward] final_output (tiled) shape: {final_output.shape}")
+
+        if read_profiler:
+            ttnn.ReadDeviceProfiler(self.mesh_device)
 
         # Build intermediates if requested
         intermediates = None
