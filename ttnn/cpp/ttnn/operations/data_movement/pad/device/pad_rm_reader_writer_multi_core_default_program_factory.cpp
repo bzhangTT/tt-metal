@@ -208,9 +208,7 @@ ProgramDescriptor PadRmReaderWriterMultiCoreDefaultProgramFactory::create_descri
     uint32_t curr_c = 0, curr_h = 0, curr_n = 0;
     uint32_t curr_sticks_read = 0;
     uint32_t curr_sticks_write = 0;
-    for (uint32_t i = 0; i < cores_in_order.size(); i++) {
-        const CoreCoord& core = cores_in_order[i];
-
+    for (const auto& core : cores_in_order) {
         uint32_t num_sticks_per_core;
         if (core_group_1.contains(core)) {
             num_sticks_per_core = num_sticks_padded_per_core_group_1;

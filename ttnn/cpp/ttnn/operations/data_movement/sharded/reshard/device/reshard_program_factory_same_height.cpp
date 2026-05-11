@@ -150,8 +150,8 @@ ProgramDescriptor ReshardSameHeightFactory<local_is_output>::create_descriptor(
             runtime_args_1.push_back(args.bank_id);
             runtime_args_1.push_back(adjusted_write_offset);
         }
-        reader_desc.emplace_runtime_args(local_cores[core_idx], std::move(runtime_args_0));
-        writer_desc.emplace_runtime_args(local_cores[core_idx], std::move(runtime_args_1));
+        reader_desc.emplace_runtime_args(local_cores[core_idx], runtime_args_0);
+        writer_desc.emplace_runtime_args(local_cores[core_idx], runtime_args_1);
     }
 
     desc.kernels.push_back(std::move(reader_desc));

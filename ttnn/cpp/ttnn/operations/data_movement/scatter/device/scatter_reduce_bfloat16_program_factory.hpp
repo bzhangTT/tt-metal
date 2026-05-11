@@ -13,7 +13,7 @@ namespace ttnn::prim {
 
 struct ScatterReduceBfloat16ProgramFactory {
     static tt::tt_metal::ProgramDescriptor create_descriptor(
-        const ScatterParams& operation_attributes, const ScatterInputs& tensor_args, Tensor& tensor_return_value);
+        const ScatterParams& args, const ScatterInputs& tensor_args, Tensor& output_tensor);
 };
 
 }  // namespace ttnn::prim

@@ -174,10 +174,10 @@ ProgramDescriptor ScatterReduceBfloat16ProgramFactory::create_descriptor(
         reader_runtime_args.push_back(index_chunk_size);
         reader_runtime_args.push_back(source_chunk_size);
         reader_runtime_args.push_back(static_cast<uint32_t>(args.opt_reduction));
-        for (auto it = input_shape.cbegin(); it != input_shape.cend() - 1; ++it) {
+        for (const auto* it = input_shape.cbegin(); it != input_shape.cend() - 1; ++it) {
             reader_runtime_args.push_back(static_cast<uint32_t>(*it));
         }
-        for (auto it = index_shape.cbegin(); it != index_shape.cend() - 1; ++it) {
+        for (const auto* it = index_shape.cbegin(); it != index_shape.cend() - 1; ++it) {
             reader_runtime_args.push_back(static_cast<uint32_t>(*it));
         }
         reader_desc.emplace_runtime_args(core, reader_runtime_args);

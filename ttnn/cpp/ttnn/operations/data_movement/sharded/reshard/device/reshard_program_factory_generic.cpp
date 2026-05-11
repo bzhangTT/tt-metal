@@ -797,8 +797,8 @@ ProgramDescriptor ReshardGenericFactory::create_descriptor(
             }
         }
 
-        kernel_desc_0.emplace_runtime_args(core, std::move(rt_args_0));
-        kernel_desc_1.emplace_runtime_args(core, std::move(rt_args_1));
+        kernel_desc_0.emplace_runtime_args(core, rt_args_0);
+        kernel_desc_1.emplace_runtime_args(core, rt_args_1);
     }
 
     desc.kernels.push_back(std::move(kernel_desc_0));

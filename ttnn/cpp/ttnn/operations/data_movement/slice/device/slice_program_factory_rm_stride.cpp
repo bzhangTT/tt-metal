@@ -109,13 +109,12 @@ ProgramDescriptor SliceRmStrideProgramFactory::create_descriptor(
     uint32_t row_start_id = 0;
     uint32_t extra_rows_remaining = extra_rows;
 
-    for (uint32_t core_idx = 0; core_idx < all_cores_vec.size(); ++core_idx) {
+    for (const auto& core : all_cores_vec) {
         uint32_t rows_for_this_core = base_rows_per_core;
         if (extra_rows_remaining > 0) {
             rows_for_this_core += 1;
             extra_rows_remaining -= 1;
         }
-        const CoreCoord& core = all_cores_vec[core_idx];
 
         // Reader/writer slot 0 holds raw buffer.address() (no offset adjustment), so we register the
         // buffer via Buffer* to take the BufferBinding fast cache-hit patch path.

@@ -13,9 +13,7 @@ namespace ttnn::prim {
 
 struct InterleavedToShardedPartialProgramFactory {
     static tt::tt_metal::ProgramDescriptor create_descriptor(
-        const InterleavedToShardedPartialParams& operation_attributes,
-        const Tensor& input_tensor,
-        Tensor& output_tensor);
+        const InterleavedToShardedPartialParams& params, const Tensor& input, Tensor& output);
 };
 
 }  // namespace ttnn::prim

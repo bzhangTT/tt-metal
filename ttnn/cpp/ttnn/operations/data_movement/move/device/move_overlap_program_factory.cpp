@@ -13,6 +13,7 @@
 #include <tt-metalium/allocator.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include <tt-metalium/hal.hpp>
+#include <tt-metalium/tilize_utils.hpp>
 
 namespace ttnn::prim {
 
@@ -172,7 +173,7 @@ ProgramDescriptor MoveOverlapProgramFactory::create_descriptor(
         runtime_args.push_back(semaphore_id);
         runtime_args.push_back(static_cast<uint32_t>(noc_controller.x));
         runtime_args.push_back(static_cast<uint32_t>(noc_controller.y));
-        runtime_args.push_back(/*control_value=*/(num_cores - 1));
+        runtime_args.push_back(num_cores - 1);  // control_value
         runtime_args.push_back(static_cast<uint32_t>(is_controller));
         runtime_args.push_back(static_cast<uint32_t>(range_0_noc.start_coord.x));
         runtime_args.push_back(static_cast<uint32_t>(range_0_noc.start_coord.y));
