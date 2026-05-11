@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 //
 // LLK regression for ttnn.sort's bitonic-merge algorithm. Mirrors
@@ -22,13 +22,7 @@ std::uint32_t unp_cfg_context          = 0;
 std::uint32_t pack_sync_tile_dst_ptr   = 0;
 std::uint32_t math_sync_tile_dst_index = 0;
 
-// Stages.
-enum class Stage : int
-{
-    Values  = 0,
-    Indices = 1
-};
-
+// Stage indices: 0 = Values, 1 = Indices.
 constexpr int NUM_STAGES = 2;
 
 // DEST register layout (matches metal sort kernel):
@@ -47,10 +41,10 @@ constexpr int SORT_END_PHASE = 5; // log2(64)-1
 constexpr bool ASCENDING = true;
 
 // Helper: count log2 of a power-of-2 integer.
-static constexpr int ilog2_ce(int n)
+static constexpr std::uint32_t ilog2_ce(std::uint32_t n)
 {
-    int r = 0;
-    while ((1 << r) < n)
+    std::uint32_t r = 0;
+    while ((1u << r) < n)
     {
         ++r;
     }
@@ -70,97 +64,90 @@ void run_kernel(RUNTIME_PARAMETERS params)
 #if defined(RUNTIME_FORMATS) && !defined(SPEED_OF_LIGHT)
     const FormatConfig& formats = params.formats;
 #endif
-    const int FULL_CT_DIM = params.FULL_CT_DIM;
-    const int Wt          = FULL_CT_DIM / NUM_STAGES;
-    const int NUM_ROWS    = params.FULL_RT_DIM;
-    const int STAGES      = ilog2_ce(Wt);
+    const std::uint32_t FULL_CT_DIM = params.FULL_CT_DIM;
+    const std::uint32_t Wt          = FULL_CT_DIM / NUM_STAGES;
+    const std::uint32_t NUM_ROWS    = params.FULL_RT_DIM;
+    const std::uint32_t STAGES      = ilog2_ce(Wt);
 
     const std::uint32_t unpack_src_data_types[NUM_STAGES] = {formats.unpack_A_src, ckernel::to_underlying(DataFormat::UInt16)};
     const std::uint32_t unpack_dst_data_types[NUM_STAGES] = {formats.unpack_A_dst, ckernel::to_underlying(DataFormat::UInt16)};
 
-    bool first_hw_config = true;
+    _llk_unpack_hw_configure_<is_fp32_dest_acc_en>(
+        unpack_src_data_types[0], unpack_src_data_types[0], unpack_dst_data_types[0], unpack_dst_data_types[0], FACE_R_DIM, FACE_R_DIM, 4, 4);
 
-    auto setup_for_stage = [&](Stage stage, bool transpose_faces)
+    for (std::uint32_t row = 0; row < NUM_ROWS; ++row)
     {
-        const int stage_index                 = static_cast<int>(stage);
-        const std::uint32_t unpack_src_format = unpack_src_data_types[stage_index];
-        const std::uint32_t unpack_dst_format = unpack_dst_data_types[stage_index];
-
-        if (first_hw_config)
-        {
-            _llk_unpack_hw_configure_<is_fp32_dest_acc_en>(
-                unpack_src_format, unpack_src_format, unpack_dst_format, unpack_dst_format, FACE_R_DIM, FACE_R_DIM, 4, 4);
-            first_hw_config = false;
-        }
-        else
-        {
-            _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
-                unpack_src_format, unpack_dst_format, 16 * 16 * 4);
-        }
-
-        _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-            transpose_faces ? 1 : 0, transpose_faces ? 1 : 0, FACE_R_DIM, 4, unpack_src_format, unpack_dst_format);
-    };
-
-    auto unpack_tile = [&](Stage stage, int l1_tile_index)
-    {
-        const int stage_index                 = static_cast<int>(stage);
-        const std::uint32_t unpack_src_format = unpack_src_data_types[stage_index];
-        const std::uint32_t unpack_dst_format = unpack_dst_data_types[stage_index];
-
-        _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-            L1_ADDRESS(params.buffer_A[l1_tile_index]), unpack_src_format, unpack_dst_format);
-    };
-
-    for (int row = 0; row < NUM_ROWS; ++row)
-    {
-        const int row_offset = row * FULL_CT_DIM;
+        const std::uint32_t row_offset = row * FULL_CT_DIM;
 
         // ----- 1. Bitonic-sequence formation -----
-        for (int wt = 0; wt < Wt; wt += 2)
+        for (std::uint32_t wt = 0; wt < Wt; wt += 2)
         {
             // Values pair (wt, wt+1) - face-level transpose.
-            setup_for_stage(Stage::Values, /*transpose_faces=*/true);
-            unpack_tile(Stage::Values, row_offset + wt);
-            unpack_tile(Stage::Values, row_offset + wt + 1);
+            _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
+                unpack_src_data_types[0], unpack_dst_data_types[0], 16 * 16 * 4);
+            _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                1, 1, FACE_R_DIM, 4, unpack_src_data_types[0], unpack_dst_data_types[0]);
+            _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                L1_ADDRESS(params.buffer_A[row_offset + wt]), unpack_src_data_types[0], unpack_dst_data_types[0]);
+            _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                L1_ADDRESS(params.buffer_A[row_offset + wt + 1]), unpack_src_data_types[0], unpack_dst_data_types[0]);
 
             // Indices pair (Wt+wt, Wt+wt+1) - face-level transpose.
-            setup_for_stage(Stage::Indices, /*transpose_faces=*/true);
-            unpack_tile(Stage::Indices, row_offset + Wt + wt);
-            unpack_tile(Stage::Indices, row_offset + Wt + wt + 1);
+            _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
+                unpack_src_data_types[1], unpack_dst_data_types[1], 16 * 16 * 4);
+            _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                1, 1, FACE_R_DIM, 4, unpack_src_data_types[1], unpack_dst_data_types[1]);
+            _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                L1_ADDRESS(params.buffer_A[row_offset + Wt + wt]), unpack_src_data_types[1], unpack_dst_data_types[1]);
+            _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                L1_ADDRESS(params.buffer_A[row_offset + Wt + wt + 1]), unpack_src_data_types[1], unpack_dst_data_types[1]);
         }
 
         // ----- 2. Bitonic merge stages -----
-        for (int stage = 2; stage <= STAGES; ++stage)
+        for (std::uint32_t stage = 2; stage <= STAGES; ++stage)
         {
-            for (int sub = stage; sub > 0; --sub)
+            for (std::uint32_t sub = stage; sub > 0; --sub)
             {
-                const int sub_dist = 1 << (sub - 1);
-                for (int i = 0; i < Wt; ++i)
+                const std::uint32_t sub_dist = 1u << (sub - 1);
+                for (std::uint32_t i = 0; i < Wt; ++i)
                 {
-                    const int j = i ^ sub_dist;
+                    const std::uint32_t j = i ^ sub_dist;
                     if (j > i)
                     {
                         // Values - no face transpose (data already column-wise after local_sort).
-                        setup_for_stage(Stage::Values, /*transpose_faces=*/false);
-                        unpack_tile(Stage::Values, row_offset + i);
-                        unpack_tile(Stage::Values, row_offset + j);
+                        _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
+                            unpack_src_data_types[0], unpack_dst_data_types[0], 16 * 16 * 4);
+                        _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                            0, 0, FACE_R_DIM, 4, unpack_src_data_types[0], unpack_dst_data_types[0]);
+                        _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                            L1_ADDRESS(params.buffer_A[row_offset + i]), unpack_src_data_types[0], unpack_dst_data_types[0]);
+                        _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                            L1_ADDRESS(params.buffer_A[row_offset + j]), unpack_src_data_types[0], unpack_dst_data_types[0]);
 
-                        setup_for_stage(Stage::Indices, /*transpose_faces=*/false);
-                        unpack_tile(Stage::Indices, row_offset + Wt + i);
-                        unpack_tile(Stage::Indices, row_offset + Wt + j);
+                        // Indices - no face transpose.
+                        _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
+                            unpack_src_data_types[1], unpack_dst_data_types[1], 16 * 16 * 4);
+                        _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                            0, 0, FACE_R_DIM, 4, unpack_src_data_types[1], unpack_dst_data_types[1]);
+                        _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                            L1_ADDRESS(params.buffer_A[row_offset + Wt + i]), unpack_src_data_types[1], unpack_dst_data_types[1]);
+                        _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                            L1_ADDRESS(params.buffer_A[row_offset + Wt + j]), unpack_src_data_types[1], unpack_dst_data_types[1]);
                     }
                 }
             }
         }
 
         // ----- 3. Final result-copy pass: unpack each tile (no transpose) -----
-        for (int t = 0; t < FULL_CT_DIM; ++t)
+        for (std::uint32_t t = 0; t < FULL_CT_DIM; ++t)
         {
-            // First Wt tiles are values, second Wt tiles are indices.
-            const Stage st = (t < Wt) ? Stage::Values : Stage::Indices;
-            setup_for_stage(st, /*transpose_faces=*/false);
-            unpack_tile(st, row_offset + t);
+            const std::uint32_t stage_idx = (t < Wt) ? 0u : 1u;
+            _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
+                unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx], 16 * 16 * 4);
+            _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                0, 0, FACE_R_DIM, 4, unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx]);
+            _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
+                L1_ADDRESS(params.buffer_A[row_offset + t]), unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx]);
         }
     }
 }
@@ -188,10 +175,10 @@ void run_kernel(RUNTIME_PARAMETERS params)
 #if defined(RUNTIME_FORMATS) && !defined(SPEED_OF_LIGHT)
     const FormatConfig& formats = params.formats;
 #endif
-    const int FULL_CT_DIM = params.FULL_CT_DIM;
-    const int Wt          = FULL_CT_DIM / NUM_STAGES;
-    const int NUM_ROWS    = params.FULL_RT_DIM;
-    const int STAGES      = ilog2_ce(Wt);
+    const std::uint32_t FULL_CT_DIM = params.FULL_CT_DIM;
+    const std::uint32_t Wt          = FULL_CT_DIM / NUM_STAGES;
+    const std::uint32_t NUM_ROWS    = params.FULL_RT_DIM;
+    const std::uint32_t STAGES      = ilog2_ce(Wt);
 
     constexpr bool APPROX             = false;
     constexpr std::uint32_t dst_index = 0;
@@ -206,54 +193,39 @@ void run_kernel(RUNTIME_PARAMETERS params)
     _llk_math_eltwise_unary_sfpu_init_<SfpuType::topk_local_sort>();
     ckernel::sfpu::_init_topk();
 
-    bool first_hw_config = true;
+    _llk_math_hw_configure_<is_fp32_dest_acc_en>(math_data_types[0], math_data_types[0]);
 
-    auto reconfig_math = [&](Stage stage)
-    {
-        const int stage_index           = static_cast<int>(stage);
-        const std::uint32_t math_format = math_data_types[stage_index];
-
-        if (first_hw_config)
-        {
-            _llk_math_hw_configure_<is_fp32_dest_acc_en>(math_format, math_format);
-            first_hw_config = false;
-        }
-        else
-        {
-            _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_format);
-        }
-
-#ifdef ARCH_BLACKHOLE
-        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
-            /*num_rows_per_matrix=*/4, /*math_format=*/math_format);
-#else
-        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(
-            /*num_rows_per_matrix=*/4, /*math_format=*/math_format);
-#endif
-    };
-
-    auto datacopy_one = [&](Stage stage, int dst_tile)
-    {
-        const std::uint32_t math_format = math_data_types[static_cast<int>(stage)];
-        _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
-            dst_tile, math_format, math_format);
-    };
-
-    for (int row = 0; row < NUM_ROWS; ++row)
+    for (std::uint32_t row = 0; row < NUM_ROWS; ++row)
     {
         // ----- 1. Bitonic-sequence formation -----
         bool ascending_local = ASCENDING;
-        for (int wt = 0; wt < Wt; wt += 2)
+        for (std::uint32_t wt = 0; wt < Wt; wt += 2)
         {
             _llk_math_wait_for_dest_available_<dest_sync>();
 
-            reconfig_math(Stage::Values);
-            datacopy_one(Stage::Values, input_dest_start);
-            datacopy_one(Stage::Values, input_dest_end);
+            // Values reconfig + datacopy.
+            _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[0]);
+#ifdef ARCH_BLACKHOLE
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(4, math_data_types[0]);
+#else
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[0]);
+#endif
+            _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                input_dest_start, math_data_types[0], math_data_types[0]);
+            _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                input_dest_end, math_data_types[0], math_data_types[0]);
 
-            reconfig_math(Stage::Indices);
-            datacopy_one(Stage::Indices, index_dest_start);
-            datacopy_one(Stage::Indices, index_dest_end);
+            // Indices reconfig + datacopy.
+            _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[1]);
+#ifdef ARCH_BLACKHOLE
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(4, math_data_types[1]);
+#else
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[1]);
+#endif
+            _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                index_dest_start, math_data_types[1], math_data_types[1]);
+            _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                index_dest_end, math_data_types[1], math_data_types[1]);
 
             _llk_math_eltwise_unary_sfpu_params_(
                 ckernel::sfpu::calculate_bitonic_topk_phases_steps<APPROX, is_fp32_dest_acc_en, /*STABLE=*/false>,
@@ -270,15 +242,15 @@ void run_kernel(RUNTIME_PARAMETERS params)
         }
 
         // ----- 2. Bitonic merge stages -----
-        for (int stage = 2; stage <= STAGES; ++stage)
+        for (std::uint32_t stage = 2; stage <= STAGES; ++stage)
         {
-            const int m_iter = stage - 1;
-            for (int sub = stage; sub > 0; --sub)
+            const std::uint32_t m_iter = stage - 1;
+            for (std::uint32_t sub = stage; sub > 0; --sub)
             {
-                const int sub_dist = 1 << (sub - 1);
-                for (int i = 0; i < Wt; ++i)
+                const std::uint32_t sub_dist = 1u << (sub - 1);
+                for (std::uint32_t i = 0; i < Wt; ++i)
                 {
-                    const int j = i ^ sub_dist;
+                    const std::uint32_t j = i ^ sub_dist;
                     if (j > i)
                     {
                         const bool ascending_block = ((i >> stage) & 1) == 0;
@@ -286,13 +258,31 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
                         _llk_math_wait_for_dest_available_<dest_sync>();
 
-                        reconfig_math(Stage::Values);
-                        datacopy_one(Stage::Values, input_dest_start);
-                        datacopy_one(Stage::Values, input_dest_end);
+                        // Values reconfig + datacopy.
+                        _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[0]);
+#ifdef ARCH_BLACKHOLE
+                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
+                            4, math_data_types[0]);
+#else
+                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[0]);
+#endif
+                        _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                            input_dest_start, math_data_types[0], math_data_types[0]);
+                        _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                            input_dest_end, math_data_types[0], math_data_types[0]);
 
-                        reconfig_math(Stage::Indices);
-                        datacopy_one(Stage::Indices, index_dest_start);
-                        datacopy_one(Stage::Indices, index_dest_end);
+                        // Indices reconfig + datacopy.
+                        _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[1]);
+#ifdef ARCH_BLACKHOLE
+                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
+                            4, math_data_types[1]);
+#else
+                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[1]);
+#endif
+                        _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                            index_dest_start, math_data_types[1], math_data_types[1]);
+                        _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                            index_dest_end, math_data_types[1], math_data_types[1]);
 
                         if (sub == 1)
                         {
@@ -324,12 +314,18 @@ void run_kernel(RUNTIME_PARAMETERS params)
         }
 
         // ----- 3. Final result-copy pass: datacopy each tile to DEST[0] -----
-        for (int t = 0; t < FULL_CT_DIM; ++t)
+        for (std::uint32_t t = 0; t < FULL_CT_DIM; ++t)
         {
-            const Stage st = (t < Wt) ? Stage::Values : Stage::Indices;
+            const std::uint32_t stage_idx = (t < Wt) ? 0u : 1u;
             _llk_math_wait_for_dest_available_<dest_sync>();
-            reconfig_math(st);
-            datacopy_one(st, /*dst_tile=*/0);
+            _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[stage_idx]);
+#ifdef ARCH_BLACKHOLE
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(4, math_data_types[stage_idx]);
+#else
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[stage_idx]);
+#endif
+            _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                0, math_data_types[stage_idx], math_data_types[stage_idx]);
             _llk_math_dest_section_done_<dest_sync, is_fp32_dest_acc_en>();
         }
     }
@@ -350,10 +346,10 @@ void run_kernel(RUNTIME_PARAMETERS params)
 #if defined(RUNTIME_FORMATS) && !defined(SPEED_OF_LIGHT)
     const FormatConfig& formats = params.formats;
 #endif
-    const int FULL_CT_DIM = params.FULL_CT_DIM;
-    const int Wt          = FULL_CT_DIM / NUM_STAGES;
-    const int NUM_ROWS    = params.FULL_RT_DIM;
-    const int STAGES      = ilog2_ce(Wt);
+    const std::uint32_t FULL_CT_DIM = params.FULL_CT_DIM;
+    const std::uint32_t Wt          = FULL_CT_DIM / NUM_STAGES;
+    const std::uint32_t NUM_ROWS    = params.FULL_RT_DIM;
+    const std::uint32_t STAGES      = ilog2_ce(Wt);
 
 #ifdef ARCH_BLACKHOLE
     _llk_pack_dest_init_<dest_sync, is_fp32_dest_acc_en>();
@@ -364,49 +360,43 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t pack_src_data_types[NUM_STAGES] = {formats.pack_src, ckernel::to_underlying(DataFormat::UInt16)};
     const std::uint32_t pack_dst_data_types[NUM_STAGES] = {formats.pack_dst, ckernel::to_underlying(DataFormat::UInt16)};
 
-    bool first_hw_config = true;
-
-    auto reconfig_pack = [&](Stage stage)
-    {
-        const int stage_index               = static_cast<int>(stage);
-        const std::uint32_t pack_src_format = pack_src_data_types[stage_index];
-        const std::uint32_t pack_dst_format = pack_dst_data_types[stage_index];
-
-        if (first_hw_config)
-        {
 #ifdef ARCH_BLACKHOLE
-            _llk_pack_hw_configure_<is_fp32_dest_acc_en, false, false>(pack_src_format, pack_dst_format, 16 * 16 * 4);
+    _llk_pack_hw_configure_<is_fp32_dest_acc_en, false, false>(pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4);
 #else
-            _llk_pack_hw_configure_<is_fp32_dest_acc_en, false>(pack_src_format, pack_dst_format, 16 * 16 * 4);
+    _llk_pack_hw_configure_<is_fp32_dest_acc_en, false>(pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4);
 #endif
-            first_hw_config = false;
-        }
-        else
-        {
-#ifdef ARCH_BLACKHOLE
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(pack_src_format, pack_dst_format, 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
-#else
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(pack_src_format, pack_dst_format, 16 * 16 * 4, FACE_R_DIM, 4, false, false);
-#endif
-        }
+    _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[0]);
 
-        _llk_pack_init_wrapper_<false, false>(pack_dst_format);
-    };
-
-    for (int row = 0; row < NUM_ROWS; ++row)
+    for (std::uint32_t row = 0; row < NUM_ROWS; ++row)
     {
-        const int row_offset = row * FULL_CT_DIM;
+        const std::uint32_t row_offset = row * FULL_CT_DIM;
 
         // ----- 1. Bitonic-sequence formation -----
-        for (int wt = 0; wt < Wt; wt += 2)
+        for (std::uint32_t wt = 0; wt < Wt; wt += 2)
         {
             _llk_packer_wait_for_math_done_();
 
-            reconfig_pack(Stage::Values);
+            // Values reconfig + pack.
+#ifdef ARCH_BLACKHOLE
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+#else
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+#endif
+            _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[0]);
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(input_dest_start, L1_ADDRESS(params.buffer_A[row_offset + wt]));
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(input_dest_end, L1_ADDRESS(params.buffer_A[row_offset + wt + 1]));
 
-            reconfig_pack(Stage::Indices);
+            // Indices reconfig + pack.
+#ifdef ARCH_BLACKHOLE
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+#else
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+#endif
+            _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[1]);
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(index_dest_start, L1_ADDRESS(params.buffer_A[row_offset + Wt + wt]));
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(index_dest_end, L1_ADDRESS(params.buffer_A[row_offset + Wt + wt + 1]));
 
@@ -414,14 +404,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
         }
 
         // ----- 2. Bitonic merge stages -----
-        for (int stage = 2; stage <= STAGES; ++stage)
+        for (std::uint32_t stage = 2; stage <= STAGES; ++stage)
         {
-            for (int sub = stage; sub > 0; --sub)
+            for (std::uint32_t sub = stage; sub > 0; --sub)
             {
-                const int sub_dist = 1 << (sub - 1);
-                for (int i = 0; i < Wt; ++i)
+                const std::uint32_t sub_dist = 1u << (sub - 1);
+                for (std::uint32_t i = 0; i < Wt; ++i)
                 {
-                    const int j = i ^ sub_dist;
+                    const std::uint32_t j = i ^ sub_dist;
                     if (j > i)
                     {
                         const bool ascending_block = ((i >> stage) & 1) == 0;
@@ -461,11 +451,27 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
                         _llk_packer_wait_for_math_done_();
 
-                        reconfig_pack(Stage::Values);
+                        // Values reconfig + pack.
+#ifdef ARCH_BLACKHOLE
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                            pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+#else
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                            pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+#endif
+                        _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[0]);
                         _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(v_low_dst, L1_ADDRESS(params.buffer_A[row_offset + i]));
                         _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(v_high_dst, L1_ADDRESS(params.buffer_A[row_offset + j]));
 
-                        reconfig_pack(Stage::Indices);
+                        // Indices reconfig + pack.
+#ifdef ARCH_BLACKHOLE
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                            pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+#else
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                            pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+#endif
+                        _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[1]);
                         _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(x_low_dst, L1_ADDRESS(params.buffer_A[row_offset + Wt + i]));
                         _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(x_high_dst, L1_ADDRESS(params.buffer_A[row_offset + Wt + j]));
 
@@ -476,11 +482,18 @@ void run_kernel(RUNTIME_PARAMETERS params)
         }
 
         // ----- 3. Final result-copy pass: pack each tile from DEST[0] to buffer_Res -----
-        for (int t = 0; t < FULL_CT_DIM; ++t)
+        for (std::uint32_t t = 0; t < FULL_CT_DIM; ++t)
         {
-            const Stage st = (t < Wt) ? Stage::Values : Stage::Indices;
+            const std::uint32_t stage_idx = (t < Wt) ? 0u : 1u;
             _llk_packer_wait_for_math_done_();
-            reconfig_pack(st);
+#ifdef ARCH_BLACKHOLE
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                pack_src_data_types[stage_idx], pack_dst_data_types[stage_idx], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+#else
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                pack_src_data_types[stage_idx], pack_dst_data_types[stage_idx], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+#endif
+            _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[stage_idx]);
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(0, L1_ADDRESS(params.buffer_Res[row_offset + t]));
             _llk_pack_dest_section_done_<dest_sync, is_fp32_dest_acc_en>();
         }
