@@ -12,7 +12,7 @@
 #include "llk_math_debug.h"
 #endif
 #ifdef TRISC_PACK
-#include "llk_pack_debug.h"
+#include "llk_pack_api.h"
 #endif
 #endif
 

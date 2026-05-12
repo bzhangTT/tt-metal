@@ -7,12 +7,6 @@
 #include "ckernel.h"
 #include "llk_math_common.h"
 
-inline void llk_math_set_fp32_dest_acc(bool enable) { _llk_math_set_fp32_dest_acc_(enable); }
-
-inline void llk_math_debug_dump(std::uint8_t* data, std::uint32_t byte_size) { _llk_math_debug_dump_(data, byte_size); }
-
-inline void llk_math_debug_dump_seek(std::uint8_t offset) { _llk_math_debug_dump_seek_(offset); }
-
 inline std::uint32_t llk_math_get_compute_special_value_flags() { return _llk_math_get_compute_special_value_flags_(); }
 
 inline std::uint32_t llk_math_get_compute_special_value_flags_fpu(std::uint32_t special_value_flags_reg) {
