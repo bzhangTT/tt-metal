@@ -74,9 +74,9 @@ void matmul_blocks(
     }
 }
 
-ALWI void pack_tile_with_wh_destination_wait(uint32_t tile, uint32_t out_cb) {
+ALWI void pack_tile_with_wh_destination_wait(uint32_t tile, uint32_t out_cb, uint32_t pack_sequence_idx) {
 #if defined(ARCH_WORMHOLE)
-    if (tile != 0) {
+    if (pack_sequence_idx != 0) {
         // Workaround for https://github.com/tenstorrent/tt-metal/issues/44077:
         // WH pack_tile reprograms the packer L1 destination. Wait before the
         // next tile rewrites that address while the previous pack is in flight.
@@ -105,7 +105,7 @@ void add_bias_inplace(uint32_t inout_cb, uint32_t bias_cb) {
             cb_pop_front(inout_cb, cols_cur);
             cb_reserve_back(inout_cb, cols_cur);
             for (uint32_t j = 0; j < cols_cur; ++j) {
-                pack_tile_with_wh_destination_wait(j, inout_cb);
+                pack_tile_with_wh_destination_wait(j, inout_cb, i * cols + col_start + j);
             }
             tile_regs_release();
             cb_push_back(inout_cb, cols_cur);
@@ -128,7 +128,7 @@ void add_block_inplace_math(uint32_t inout_cb, uint32_t add_cb) {
         cb_pop_front(add_cb, tiles_cur);
         cb_reserve_back(inout_cb, tiles_cur);
         for (uint32_t tile = 0; tile < tiles_cur; ++tile) {
-            pack_tile_with_wh_destination_wait(tile, inout_cb);
+            pack_tile_with_wh_destination_wait(tile, inout_cb, i + tile);
         }
         tile_regs_release();
         cb_push_back(inout_cb, tiles_cur);
