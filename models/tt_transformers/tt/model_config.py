@@ -2916,6 +2916,16 @@ class ModelArgs:
 
         allowed_seq_lens = self.trace_prefill_supported_seq_lens
 
+        if (
+            self.base_model_name == "Llama-3.1-8B"
+            and prefill_seq_len == 128
+            and self.num_devices == 8
+            and self.mesh_device is not None
+            and tuple(self.mesh_device.shape) == (1, 8)
+            and ttnn.cluster.get_cluster_type() == ttnn.cluster.ClusterType.GALAXY
+        ):
+            return False
+
         return (
             prefill_seq_len in allowed_seq_lens
             and prefill_seq_len <= self.max_prefill_chunk_size
