@@ -66,10 +66,6 @@ wormhole_b0:
   # https://github.com/tenstorrent/tt-metal/pull/42112
   - tests/ttnn/unit_tests/operations/eltwise/test_binary_ng_typecast.py
 
-  # ERROR: UnsupportedFunctionality: tensix_execute_sfploadmacro: macro_index=1 sequence=0x00000085
-  # TODO: Link to issue
-  - tests/ttnn/unit_tests/operations/reduce/test_min_max_sfpu.py
-
 blackhole:
   # Job-level timeouts
   - tests/ttnn/unit_tests/operations/conv/test_conv2d.py
@@ -119,7 +115,3 @@ blackhole:
   - tests/ttnn/unit_tests/operations/reduce/test_reduction.py
   - tests/ttnn/unit_tests/operations/reduce/test_reduction_program_cache.py
   - tests/ttnn/unit_tests/operations/reduce/test_sum.py
-
-  # ERROR: UnimplementedFunctionality: tensix_execute_sfpshft2: instr_mod1=4
-  # TODO: Link to issue
-  - tests/ttnn/unit_tests/operations/reduce/test_min_max_sfpu.py
