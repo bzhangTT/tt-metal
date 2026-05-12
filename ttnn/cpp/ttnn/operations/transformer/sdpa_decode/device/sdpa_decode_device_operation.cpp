@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include <tt-metalium/constants.hpp>
+
 #include "ttnn/operation.hpp"
 #include "ttnn/tensor/tensor_utils.hpp"
 
@@ -211,6 +213,14 @@ void SdpaDecodeDeviceOperation::validate_on_program_cache_miss(
 
         TT_FATAL(k_shape[2] == v_shape[2], "K and V must have same block size");
 
+        // ``block_size_override`` only makes sense in paged mode (paged
+        // attention IS this branch); reject it for MLA for now —
+        // hybrid kv-cache-groups with MLA isn't a user case yet and the
+        // extra coverage would multiply the test matrix.
+        if (operation_attributes.block_size_override.has_value()) {
+            TT_FATAL(!use_mla, "block_size_override is not supported with multi-latent attention");
+        }
+
         if (use_mla) {
             TT_FATAL(
                 k_shape[3] == q_shape[3], "Q and K must have same hidden size, got {} and {}", k_shape[3], q_shape[3]);
@@ -221,6 +231,55 @@ void SdpaDecodeDeviceOperation::validate_on_program_cache_miss(
                     v_shape[3],
                     operation_attributes.head_dim_v.value());
             }
+        } else if (operation_attributes.block_size_override.has_value()) {
+            // Flexible-geometry path: cache may have been allocated with a
+            // different ``(block_size, head_dim)`` view than this call uses.
+            // Q's last dim is the source of truth for the layer's head_dim
+            // (CUDA-style: kernel addresses K and V via Q's geometry +
+            // ``block_size_override``). K and V caches must still be the
+            // same shape as each other (they share a per-layer allocation
+            // pair), and the per-block element count must equal what the
+            // cache was allocated for so the kernel's block-stride math
+            // lands in the right DRAM region.
+            TT_FATAL(
+                k_shape[3] == v_shape[3],
+                "K and V cache must have same hidden size in flexible-geometry mode, got {} and {}",
+                k_shape[3],
+                v_shape[3]);
+            const uint32_t cache_num_kv_heads = k_shape[1];
+            const uint32_t cache_block_size = k_shape[2];
+            const uint32_t cache_head_dim = k_shape[3];
+            const uint32_t q_head_dim = q_shape[3];
+            const uint32_t effective_block_size = operation_attributes.block_size_override.value();
+            const uint64_t cache_elems_per_block =
+                static_cast<uint64_t>(cache_num_kv_heads) * cache_block_size * cache_head_dim;
+            const uint64_t view_elems_per_block =
+                static_cast<uint64_t>(cache_num_kv_heads) * effective_block_size * q_head_dim;
+            TT_FATAL(
+                view_elems_per_block == cache_elems_per_block,
+                "paged_scaled_dot_product_attention_decode geometry mismatch: cache holds {} elements per block "
+                "(num_kv_heads={}, block_size={}, head_dim={}) but the call's view is {} elements per block "
+                "(num_kv_heads={}, block_size={}, head_dim={} from Q.padded_shape[-1]). The kernel addresses cache "
+                "blocks at a stride of num_kv_heads * block_size * head_dim, so this product must be preserved "
+                "across views of the same physical buffer.",
+                cache_elems_per_block,
+                cache_num_kv_heads,
+                cache_block_size,
+                cache_head_dim,
+                view_elems_per_block,
+                cache_num_kv_heads,
+                effective_block_size,
+                q_head_dim);
+            TT_FATAL(
+                effective_block_size % tt::constants::TILE_HEIGHT == 0,
+                "effective block_size ({}) must be a multiple of TILE_HEIGHT ({})",
+                effective_block_size,
+                tt::constants::TILE_HEIGHT);
+            TT_FATAL(
+                q_head_dim % tt::constants::TILE_WIDTH == 0,
+                "Q last dim ({}) must be a multiple of TILE_WIDTH ({})",
+                q_head_dim,
+                tt::constants::TILE_WIDTH);
         } else {
             TT_FATAL(k_shape[3] == v_shape[3] && k_shape[3] == q_shape[3], "Q, K, V must have same hidden size");
         }
@@ -444,6 +503,11 @@ ttsl::hash::hash_t SdpaDecodeDeviceOperation::compute_program_hash(
         operation_attributes.use_mla,
         operation_attributes.head_dim_v,
         operation_attributes.sliding_window_size,
+        // ``block_size_override`` enters compile-time kernel args (it
+        // changes ``page_block_size_t``, ``DHt``, and ``St``), so two
+        // calls on the same tensor shapes but with different overrides
+        // must compile distinct programs.
+        operation_attributes.block_size_override,
         tensor_args.q,
         tensor_args.k,
         tensor_args.v,
@@ -474,7 +538,8 @@ Tensor sdpa_decode(
     uint32_t k_chunk_size,
     std::optional<bool> share_cache,
     std::optional<bool> use_mla,
-    std::optional<uint32_t> head_dim_v) {
+    std::optional<uint32_t> head_dim_v,
+    std::optional<uint32_t> block_size_override) {
     using OperationType = SdpaDecodeDeviceOperation;
     auto operation_attributes = OperationType::operation_attributes_t{
         .is_causal = is_causal,
@@ -489,6 +554,7 @@ Tensor sdpa_decode(
         .share_cache = share_cache,
         .use_mla = use_mla,
         .head_dim_v = head_dim_v,
+        .block_size_override = block_size_override,
     };
 
     auto tensor_args = OperationType::tensor_args_t{

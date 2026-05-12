@@ -70,11 +70,23 @@ SdpaDecodeProgramFactory::cached_program_t SdpaDecodeProgramFactory::create(
 
     // ========== Core Dimensions ==========
     // B = batch size, PNH = padded num Q heads, S = sequence length, DH = head dim
+    //
+    // ``DH`` (and ``vDH``) source: when ``block_size_override`` is set,
+    // the caller is reinterpreting a shared K/V cache buffer through a
+    // different ``(block_size, head_dim)`` view than the cache's
+    // declared shape. Q's last dim is the source of truth for the
+    // layer's head_dim in that case — same CUDA-style pattern as
+    // ``paged_update_cache``/``paged_fill_cache`` (the kernel reads K/V
+    // bytes through the layer's view, not the cache's declared shape).
+    // When the override is unset, the legacy ``k_shape[3]`` is used and
+    // the strict ``q.head_dim == k.head_dim`` check in validate keeps
+    // existing callers byte-identical.
+    const bool has_block_size_override = operation_attributes.block_size_override.has_value();
     uint32_t B = q_shape[1];
     uint32_t PNH = q_shape[2];
     uint32_t S = k_shape[2];
-    uint32_t DH = k_shape[3];
-    uint32_t vDH = use_mla ? head_dim_v : v_shape[3];
+    uint32_t DH = has_block_size_override ? q_shape[3] : k_shape[3];
+    uint32_t vDH = use_mla ? head_dim_v : (has_block_size_override ? q_shape[3] : v_shape[3]);
     uint32_t Bkv = k_shape[0];
     uint32_t Bmask = attn_mask.has_value() ? attn_mask->padded_shape()[0] : Bkv;
     uint32_t num_kv_heads = k_shape[1];
@@ -89,10 +101,23 @@ SdpaDecodeProgramFactory::cached_program_t SdpaDecodeProgramFactory::create(
         B = page_table_tensor->is_sharded() ? page_table_tensor->padded_shape()[0] /
                                                   page_table_tensor->memory_config().shard_spec()->grid.num_cores()
                                             : page_table_tensor->padded_shape()[0];
-        uint32_t block_size = k_shape[2];
-        original_block_size = input_tensor_k.logical_shape()[2];
+        // Effective block_size honors the override; falls back to the
+        // cache's declared block_size for legacy callers.
+        uint32_t block_size = operation_attributes.block_size_override.value_or(k_shape[2]);
+        // ``original_block_size`` is the *logical* (unpadded) block_size
+        // and gates the sub-tile padding mask. When the override is
+        // active we use it as both logical and padded — validate.cpp
+        // already enforces it's a multiple of TILE_HEIGHT, so no padding
+        // mask path applies.
+        original_block_size = has_block_size_override ? block_size : input_tensor_k.logical_shape()[2];
         page_block_size_t = block_size / TILE_HEIGHT;
-        S = page_table_tensor.value().padded_shape()[-1] * S;
+        // ``S`` is the kv sequence length the kernel iterates over.
+        // ``page_table.padded_shape[-1]`` is max_num_blocks_per_seq;
+        // multiplying by the effective block_size gives the per-request
+        // kv_seq_len. Pre-override behavior used ``k_shape[2]`` (the
+        // cache's declared block_size); we now use the override-derived
+        // value for the same product.
+        S = page_table_tensor.value().padded_shape()[-1] * block_size;
         has_block_padding = original_block_size < TILE_HEIGHT;
     }
 

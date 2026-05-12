@@ -28,6 +28,19 @@ struct SdpaDecodeParams {
     // When true, enables multi-latent attention (MLA) path where V is derived from K.
     std::optional<bool> use_mla = std::nullopt;
     std::optional<uint32_t> head_dim_v = std::nullopt;
+    // Optional override of the per-block token capacity for paged attention.
+    // When unset, the kernel derives ``block_size`` from
+    // ``k.padded_shape[2]`` (the legacy path) and ``head_dim`` from
+    // ``k.padded_shape[-1]``. When set, the caller is reinterpreting the
+    // same physical K/V buffer with a different ``(block_size, head_dim)``
+    // tile arrangement than the cache's declared shape — Q's last dim
+    // then becomes the source of truth for ``head_dim``. Use case: vLLM's
+    // hybrid kv-cache-groups manager equalises per-block bytes across
+    // groups by adjusting ``block_size`` per group, leaving one physical
+    // buffer shared across layers with different ``(block_size, head_dim)``
+    // views. See the validation in ``validate_on_program_cache_miss`` for
+    // the byte-count consistency invariant.
+    std::optional<uint32_t> block_size_override = std::nullopt;
 };
 
 struct SdpaDecodeInputs {

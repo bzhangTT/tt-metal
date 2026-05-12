@@ -92,7 +92,13 @@ void bind_sdpa_decode(nb::module_& mod) {
         nb::arg("sliding_window_size") = nb::none(),
         nb::arg("memory_config") = nb::none(),
         nb::arg("program_config") = nb::none(),
-        nb::arg("compute_kernel_config") = nb::none());
+        nb::arg("compute_kernel_config") = nb::none(),
+        // ``block_size`` reinterprets the K/V cache through a different
+        // (block_size, head_dim) view than the cache's declared shape.
+        // See ttnn.experimental.paged_update_cache's equivalent kwarg
+        // for the full rationale (per-block byte count must be preserved
+        // across views).
+        nb::arg("block_size").noconvert() = nb::none());
 
     ttnn::bind_function<"flash_multi_latent_attention_decode", "ttnn.transformer.">(
         mod,
