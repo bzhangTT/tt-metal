@@ -99,6 +99,7 @@ class SamplingGenerator:
 
         self._penalties_active = False
         self._mixed_top1_sampling = False
+        self._top1_argmax_slots: list[int] = []
 
         self._trace_states: dict[_TraceKey, dict] = {}
         seed_batch_size = self.tt_sampling.max_batch_size * self.tt_sampling._sampling_dp
@@ -225,17 +226,46 @@ class SamplingGenerator:
         if not isinstance(top_k, list):
             return False
 
+        active_top_k = self._active_sampling_values(top_k, active_slots)
+        return any(k == 1 for k in active_top_k) and any(k != 1 for k in active_top_k)
+
+    def _active_sampling_indices(self, values, active_slots: list[int] | None = None):
+        if not isinstance(values, list):
+            return []
+
         if active_slots is not None:
             param_indices = self.seed_manager._expanded_user_ids(active_slots)
-            active_top_k = [top_k[idx] for idx in param_indices if idx < len(top_k)]
+            return [idx for idx in param_indices if idx < len(values)]
         else:
-            active_top_k = top_k
+            return list(range(len(values)))
 
-        return any(k == 1 for k in active_top_k) and any(k != 1 for k in active_top_k)
+    def _active_sampling_values(self, values, active_slots: list[int] | None = None):
+        return [values[idx] for idx in self._active_sampling_indices(values, active_slots)]
+
+    def _reset_top1_argmax_slots(self, sampling_params, active_slots: list[int] | None = None):
+        top_k = getattr(sampling_params, "top_k", None)
+        if not isinstance(top_k, list):
+            self._top1_argmax_slots = []
+            return
+
+        # The host-side argmax correction writes the replicated [1,1,1,B]
+        # token tensor used by the Galaxy sampler. Leave row-sharded sampling
+        # paths alone until they have their own slot-to-shard copy helper.
+        if self.tt_sampling._sampling_dp != 1:
+            self._top1_argmax_slots = []
+            return
+
+        max_batch_size = self.tt_sampling.max_batch_size
+        self._top1_argmax_slots = [
+            int(idx)
+            for idx in self._active_sampling_indices(top_k, active_slots)
+            if idx < max_batch_size and top_k[idx] == 1
+        ]
 
     def reset_sampling_params(self, sampling_params, empty_slots: list[int] | None = None):
         old_force_argmax_sampling = self.tt_sampling.force_argmax_sampling
         self._mixed_top1_sampling = self._has_mixed_top1_sampling(sampling_params, empty_slots)
+        self._reset_top1_argmax_slots(sampling_params, empty_slots)
         num_logprobs = getattr(sampling_params, "num_logprobs", None)
         self.tt_sampling.reset_params(
             k=sampling_params.top_k,
@@ -263,6 +293,90 @@ class SamplingGenerator:
                 sampling_params.presence_penalty, sampling_params.frequency_penalty, sampling_params.repetition_penalty
             )
         self._log_probs_active = self.tt_sampling.log_probs_calculator.enable_log_probs
+
+    def _logits_mesh_composer(self):
+        cluster_shape = getattr(self.tt_sampling, "cluster_shape", getattr(self.args, "cluster_shape", None))
+        if cluster_shape is None:
+            return None
+
+        cluster_shape = list(cluster_shape)
+        if len(cluster_shape) == 2 and cluster_shape[0] > 1 and cluster_shape[1] > 1:
+            # Galaxy decode logits are sharded over vocab on mesh rows and
+            # replicated/split over columns; this matches the transformer
+            # host-logit path used by the model tests.
+            return ttnn.ConcatMesh2dToTensor(self.mesh_device, dims=(3, 1), mesh_shape=cluster_shape)
+
+        try:
+            num_devices = self.mesh_device.get_num_devices()
+        except AttributeError:
+            num_devices = 1
+        if num_devices > 1:
+            return ttnn.ConcatMeshToTensor(self.mesh_device, dim=3)
+        return None
+
+    def _tokens_to_host(self, tt_tokens):
+        device_tensors = ttnn.get_device_tensors(tt_tokens)
+        if device_tensors:
+            return ttnn.to_torch(device_tensors[0]).to(torch.int32)
+        return ttnn.to_torch(tt_tokens).to(torch.int32)
+
+    def _logits_to_host(self, logits):
+        mesh_composer = self._logits_mesh_composer()
+        if mesh_composer is None:
+            logits_host = ttnn.to_torch(logits)
+        else:
+            logits_host = ttnn.to_torch(logits, mesh_composer=mesh_composer)
+
+        logits_host = logits_host.float()
+        while logits_host.ndim > 2:
+            logits_host = logits_host[0]
+
+        vocab_size = getattr(self.args, "vocab_size", None)
+        if vocab_size is not None and logits_host.shape[-1] > vocab_size:
+            logits_host = logits_host[..., :vocab_size]
+        return logits_host
+
+    def _copy_tokens_to_device(self, tokens_host: torch.Tensor, tt_tokens):
+        tokens_tt = ttnn.from_torch(
+            tokens_host.to(torch.uint32),
+            device=None,
+            dtype=ttnn.uint32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+        )
+        ttnn.copy_host_to_device_tensor(tokens_tt, tt_tokens, cq_id=self.cq_id)
+
+    def _apply_top1_argmax_fallback(self, logits, tt_tokens, *, penalties_on: bool):
+        if not self._top1_argmax_slots:
+            return tt_tokens
+
+        # Logprob callers need the sampled token and returned logprob to agree.
+        # The current flaky vLLM paths do not request logprobs, so leave logprob
+        # sampling on the pure-device path.
+        if getattr(self, "_log_probs_active", False):
+            return tt_tokens
+
+        # For pure greedy batches without penalties the dedicated force-argmax
+        # path is already exact. Correct only the cases that have shown flaky
+        # row isolation: mixed top-1/stochastic batches and greedy penalty
+        # batches where logits are modified before sampling.
+        if not (self._mixed_top1_sampling or penalties_on):
+            return tt_tokens
+
+        logits_host = self._logits_to_host(logits)
+        tokens_host = self._tokens_to_host(tt_tokens)
+        flat_tokens = tokens_host.reshape(-1)
+        if logits_host.shape[0] < flat_tokens.numel():
+            logits_host = logits_host.reshape(-1, logits_host.shape[-1])
+
+        for slot in self._top1_argmax_slots:
+            if slot >= logits_host.shape[0] or slot >= flat_tokens.numel():
+                continue
+            flat_tokens[slot] = torch.argmax(logits_host[slot], dim=-1).to(torch.int32)
+
+        self._copy_tokens_to_device(tokens_host, tt_tokens)
+        ttnn.synchronize_device(self.mesh_device)
+        return tt_tokens
 
     def _validate_trace_inputs(self, slot, logits: ttnn.Tensor, tt_out_tok: Optional[ttnn.Tensor]):
         if slot["input"] is None or slot["output"] is None:
@@ -301,6 +415,7 @@ class SamplingGenerator:
             # not occasionally sample one row from partially updated logits.
             ttnn.synchronize_device(self.mesh_device)
         tt_tokens, tt_log_probs = self.tt_sampling(logits, tt_out_tok=tt_out_tok)
+        tt_tokens = self._apply_top1_argmax_fallback(logits, tt_tokens, penalties_on=penalties_on)
         return tt_tokens, tt_log_probs
 
     def capture_trace(

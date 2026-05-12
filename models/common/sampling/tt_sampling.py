@@ -216,16 +216,6 @@ class TTSampling(LightweightModule):
             layout=ttnn.ROW_MAJOR_LAYOUT,
             mesh_mapper=self._param_mapper,
         )
-        self._mixed_top1_sampling = False
-        self.top1_mask_tensor = ttnn.from_torch(
-            torch.zeros((1, 1, 1, self.max_batch_size), dtype=torch.float32),
-            device=self.mesh_device,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            mesh_mapper=self._replicated_mapper,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-
         # Create device offset indices for global indexing
         self._create_indices_tensors()
         # Log-probs tensor to store the log-probs for the batch
@@ -359,13 +349,6 @@ class TTSampling(LightweightModule):
         empty_slots: list[int] | None = None,
     ):
         """Update sampling parameters (k, p, temperature, logprobs) dynamically."""
-        if empty_slots is None:
-            active_indices = list(range(min(len(k), self.max_batch_size)))
-        else:
-            active_indices = [int(slot) for slot in empty_slots if int(slot) < self.max_batch_size]
-        active_k = [k[idx] for idx in active_indices if idx < len(k)]
-        self._mixed_top1_sampling = any(val == 1 for val in active_k) and any(val != 1 for val in active_k)
-
         self._force_argmax_sampling = self._is_force_argmax_sampling(k, p, temp)
         if not self._force_argmax_sampling:
             self.k_tensor_new = ttnn.from_torch(
@@ -393,20 +376,6 @@ class TTSampling(LightweightModule):
             ttnn.copy_host_to_device_tensor(self.k_tensor_new, self.k_tensor)
             ttnn.copy_host_to_device_tensor(self.p_tensor_new, self.p_tensor)
             ttnn.copy_host_to_device_tensor(self.temp_tensor_new, self.temp_tensor)
-
-            if self._mixed_top1_sampling:
-                top1_mask = torch.zeros((1, 1, 1, self.max_batch_size), dtype=torch.float32)
-                for idx in active_indices:
-                    if idx < len(k) and k[idx] == 1:
-                        top1_mask[0, 0, 0, idx] = 1.0
-                top1_mask_tt = ttnn.from_torch(
-                    top1_mask,
-                    device=None,
-                    dtype=ttnn.bfloat16,
-                    layout=ttnn.ROW_MAJOR_LAYOUT,
-                    mesh_mapper=self._replicated_mapper,
-                )
-                ttnn.copy_host_to_device_tensor(top1_mask_tt, self.top1_mask_tensor)
 
         self.log_probs_calculator.set_log_probs_mode(
             enable_log_probs, num_logprobs=num_logprobs, empty_slots=empty_slots
@@ -602,25 +571,6 @@ class TTSampling(LightweightModule):
             sub_core_grids=self._sampling_core_grid,
             output_tensor=tt_out_tok,
         )
-        if self._mixed_top1_sampling:
-            # In mixed greedy/stochastic batches, k=1 rows should be exact
-            # top-1. The stochastic sampler still sees the wider candidate
-            # buffer used by the other rows, and can occasionally diverge for
-            # k=1; replace only those rows with the already computed global
-            # top-k column 0 while leaving stochastic rows untouched.
-            top1_tokens = ttnn.slice(
-                topk_global_indices_interleaved_untilised,
-                [0, 0, 0, 0],
-                [1, 1, self.max_batch_size, 1],
-            )
-            top1_tokens = ttnn.reshape(top1_tokens, tt_out_tok.shape)
-            tt_out_tok = ttnn.where(
-                self.top1_mask_tensor,
-                top1_tokens,
-                tt_out_tok,
-                output_tensor=tt_out_tok,
-            )
-            ttnn.deallocate(top1_tokens)
 
         # Compute logprobs if enabled
         if self.log_probs_calculator.enable_log_probs and self.log_probs_calculator._use_topk_logprobs:
