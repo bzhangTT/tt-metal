@@ -7,6 +7,7 @@
 #include "api/compute/reduce.h"
 #ifdef ARCH_QUASAR
 #include "experimental/dataflow_buffer.h"
+#include "experimental/kernel_args.h"
 #else
 #include "experimental/circular_buffer.h"
 #endif

@@ -7,7 +7,9 @@
 #include "experimental/dataflow_buffer.h"
 #include "experimental/endpoints.h"
 #include "experimental/noc.h"
-#ifndef ARCH_QUASAR
+#ifdef ARCH_QUASAR
+#include "experimental/kernel_args.h"
+#else
 #include "experimental/circular_buffer.h"
 #endif
 
