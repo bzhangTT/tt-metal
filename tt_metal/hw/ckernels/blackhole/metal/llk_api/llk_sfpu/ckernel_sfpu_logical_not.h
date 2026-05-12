@@ -19,7 +19,7 @@ inline void calculate_logical_not(std::uint32_t dst_index_in, std::uint32_t dst_
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
         // load in conditional uint16 value
-        TT_SFPLOAD(p_sfpu::LREG0, INSTRUCTION_MODE, ADDR_MOD_7, 0);
+        TTI_SFPLOAD(p_sfpu::LREG0, INSTRUCTION_MODE, ADDR_MOD_7, 0);
         // initially put 0 into output
         TTI_SFPMOV(0, p_sfpu::LCONST_0, p_sfpu::LREG1, 0);
         // if (REG0 == 0)

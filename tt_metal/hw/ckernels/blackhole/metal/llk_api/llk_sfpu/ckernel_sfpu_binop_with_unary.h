@@ -81,7 +81,7 @@ void calculate_add_int32(std::uint32_t dst_index_in, std::uint32_t dst_index_out
     // Load value scalar to lreg2
     _sfpu_load_imm32_(p_sfpu::LREG2, int_scalar);
     for (int d = 0; d < ITERATIONS; d++) {
-        TT_SFPLOAD(p_sfpu::LREG0, INT32, ADDR_MOD_7, 0);
+        TTI_SFPLOAD(p_sfpu::LREG0, INT32, ADDR_MOD_7, 0);
         TTI_SFPMOV(0, p_sfpu::LREG2, p_sfpu::LREG1, 0);  // Using mov to preserve the scalar value after each iteration
         TTI_SFPIADD(0, p_sfpu::LREG0, p_sfpu::LREG1, 4);
         TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
@@ -96,7 +96,7 @@ void calculate_sub_int32(std::uint32_t dst_index_in, std::uint32_t dst_index_out
     // Load value scalar to lreg2
     _sfpu_load_imm32_(p_sfpu::LREG2, int_scalar);
     for (int d = 0; d < ITERATIONS; d++) {
-        TT_SFPLOAD(p_sfpu::LREG0, INT32, ADDR_MOD_7, 0);
+        TTI_SFPLOAD(p_sfpu::LREG0, INT32, ADDR_MOD_7, 0);
         // Move scalar to lreg1 because lreg1 is the destination register in each loop iteration, so lreg2 keeps the
         // original scalar value.
         TTI_SFPMOV(0, p_sfpu::LREG2, p_sfpu::LREG1, 0);

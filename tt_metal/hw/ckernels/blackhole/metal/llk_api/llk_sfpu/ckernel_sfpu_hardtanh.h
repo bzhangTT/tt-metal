@@ -22,7 +22,7 @@ inline void calculate_hardtanh(std::uint32_t dst_index_in, std::uint32_t dst_ind
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
         // x = max(x, min_val) using LREG2
-        TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, 0);
+        TTI_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, 0);
         TTI_SFPMOV(0, p_sfpu::LREG2, p_sfpu::LREG1, 0);
         TTI_SFPSWAP(0, p_sfpu::LREG1, p_sfpu::LREG0, 1 /* smaller value to LREG0 */);
         TT_SFPSTORE(
