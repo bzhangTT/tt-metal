@@ -656,9 +656,17 @@ class ModelArgs:
             # All Gather Matmul for Dense Out (DO) - computed flag stored as instance attribute
             # NOTE: Fused all gather matmul only supports a core grid of size num_devices x 1
             # TODO: #26657 refactor ACTUAL_DEVICE environment variable usage
+            actual_device_is_tg = os.getenv("ACTUAL_DEVICE", "") == "TG"
+            use_galaxy_dp4_8b_submesh_agmm = (
+                actual_device_is_tg
+                and self.base_model_name == "Llama-3.1-8B"
+                and self.num_devices == 8
+                and tuple(self.cluster_shape) == (1, 8)
+            )
+            self._use_t3k_fused_agmm_config = not actual_device_is_tg or use_galaxy_dp4_8b_submesh_agmm
             self._use_fused_all_gather_matmul = (
                 self.num_devices == 8
-                and os.getenv("ACTUAL_DEVICE", "") != "TG"
+                and self._use_t3k_fused_agmm_config
                 and (self.dim // ttnn.TILE_SIZE // self.num_devices) % self.num_devices == 0
                 and self.num_devices > 1
                 and self.ccl_topology() == ttnn.Topology.Ring
@@ -1908,7 +1916,7 @@ class ModelArgs:
                 else (
                     1024
                     if self.num_devices == 8
-                    and os.getenv("ACTUAL_DEVICE", "") != "TG"
+                    and getattr(self, "_use_t3k_fused_agmm_config", os.getenv("ACTUAL_DEVICE", "") != "TG")
                     and not is_blackhole()
                     and 1024 % (self.dim // self.num_devices) == 0
                     else self.dim
