@@ -14,7 +14,7 @@
 #   * Non-32-bit / MX formats with dest_acc=No            → unpack_to_dest=False
 #                                                           (UNPACK→SrcA→FPU datacopy→Dest)
 #
-# Format matrix (§7d, analyzer spec):
+# Format matrix:
 #   Float variant: Float16, Float16_b, Float32, MxFp8R, MxFp8P
 #   Int variant:   Int32, UInt8 (UInt32 deferred — not in VALID_QUASAR_DEST_REG_FORMATS)
 
@@ -127,9 +127,9 @@ def prepare_binary_max_min_inputs(
     return in0, in1
 
 
-# ─── Format lists (§7d coverage) ──────────────────────────────────────────────
+# ─── Format lists ─────────────────────────────────────────────────────────────
 
-# Float variant — §7d pairs covered by the dual-path kernel.
+# Float variant — pairs covered by the dual-path kernel.
 SFPU_BINARY_MAX_MIN_FLOAT_FORMATS = input_output_formats(
     [
         DataFormat.Float16_b,
@@ -155,7 +155,7 @@ def generate_binary_max_min_float_combinations(formats_list: List[FormatConfig])
     Generate (format, dest_acc, implied_math_format, is_max_op, input_dimensions) tuples
     for the float variant (non-Int32 formats).
 
-    §7d Yes-count: 5 pairs. dest_acc filtered per SFPU bit-width rule.
+    Yes-count: 5 pairs. dest_acc filtered per SFPU bit-width rule.
     """
     combinations = []
     for fmt in formats_list:
