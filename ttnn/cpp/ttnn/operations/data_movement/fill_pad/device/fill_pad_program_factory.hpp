@@ -7,6 +7,7 @@
 #include <tt-metalium/program_descriptors.hpp>
 #include "fill_pad_device_operation_types.hpp"
 #include "ttnn/tensor/tensor.hpp"
+#include "ttnn/types.hpp"
 
 namespace ttnn::prim::detail {
 
