@@ -427,6 +427,40 @@ class TtMoEGatePrefill(LightweightModule):
             epsilon=1e-20,
         )
 
+    def _make_padding_config_tensor(self, num_real_tokens: int, padding_side: str) -> ttnn.Tensor:
+        """Create per-SP-shard [local_num_real_tokens, pad_side] config for moe_grouped_topk."""
+        if padding_side not in ("right", "left"):
+            raise ValueError(f"padding_side must be 'right' or 'left', got {padding_side!r}")
+
+        sp_factor = self.mesh_device.shape[0]
+        seq_len_per_chip = self.config.sp_dim
+        total_tokens = sp_factor * seq_len_per_chip
+        pad_side = 0 if padding_side == "right" else 1
+
+        padding_config = []
+        for sp_idx in range(sp_factor):
+            if padding_side == "right":
+                local_real_tokens = min(seq_len_per_chip, max(0, num_real_tokens - sp_idx * seq_len_per_chip))
+            else:
+                total_padded_tokens = max(0, total_tokens - num_real_tokens)
+                local_padded_tokens = min(seq_len_per_chip, max(0, total_padded_tokens - sp_idx * seq_len_per_chip))
+                local_real_tokens = seq_len_per_chip - local_padded_tokens
+
+            padding_config.append([local_real_tokens, pad_side])
+
+        return ttnn.from_torch(
+            torch.tensor(padding_config, dtype=torch.int32),
+            device=self.mesh_device,
+            dtype=ttnn.uint32,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(
+                self.mesh_device,
+                dims=(0, None),
+                mesh_shape=self.mesh_device.shape,
+            ),
+        )
+
     def _device_grouped_gate_fp32(
         self,
         logits: ttnn.Tensor,
@@ -435,25 +469,14 @@ class TtMoEGatePrefill(LightweightModule):
     ) -> tuple[ttnn.Tensor, ttnn.Tensor]:
         """Run moe_grouped_topk on device with fp32 typecast.
 
-        When num_real_tokens is set and SP factor is 1, padded token rows
-        get sentinel expert indices (= n_routed_experts) so downstream
-        masked_bincount/dispatch/combine skip them.  SP > 1 is not yet
-        supported for the sentinel path; a warning is logged and padding
-        masking is disabled.
+        When num_real_tokens is set, padded token rows get sentinel expert
+        indices (= n_routed_experts) so downstream masked_bincount/dispatch/
+        combine skip them.  For SP > 1, the padding config tensor carries
+        per-device local real-token counts.
         """
-        sp_factor = self.mesh_device.shape[0]
-        op_num_real_tokens = 0xFFFFFFFF  # UINT32_MAX → "no padding"
-        op_pad_side = 0
-
-        if num_real_tokens is not None:
-            if sp_factor > 1:
-                logger.warning(
-                    "[MoeGate] SP factor > 1 with padding is not yet supported for sentinel routing. "
-                    "Padded tokens will not be masked in moe_grouped_topk."
-                )
-            else:
-                op_num_real_tokens = num_real_tokens
-                op_pad_side = 0 if padding_side == "right" else 1
+        padding_config = (
+            self._make_padding_config_tensor(num_real_tokens, padding_side) if num_real_tokens is not None else None
+        )
 
         logits_f32 = ttnn.typecast(logits, ttnn.float32)
         bias_f32 = ttnn.typecast(self.bias, ttnn.float32)
@@ -467,11 +490,12 @@ class TtMoEGatePrefill(LightweightModule):
             route_scale=self.config.route_scale,
             stable_sort=True,
             epsilon=1e-20,
-            num_real_tokens=op_num_real_tokens,
-            pad_side=op_pad_side,
+            padding_config=padding_config,
         )
         ttnn.deallocate(logits_f32)
         ttnn.deallocate(bias_f32)
+        if padding_config is not None:
+            ttnn.deallocate(padding_config)
         return ttnn_scores, ttnn_top_k_experts_indices
 
     def _host_grouped_gate(self, host_logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
