@@ -145,17 +145,22 @@ void run_kernel(RUNTIME_PARAMETERS params)
         set_up_dest_dvalid_per_thread<dest_dvalid_client::SFPU>({dest_dvalid_client::FPU, dest_dvalid_client::SFPU, dest_dvalid_client::PACK});
     }
 
-    DataFormat src_format = static_cast<DataFormat>(formats.math);
+    DataFormat math_format     = static_cast<DataFormat>(formats.math);
+    DataFormat pack_src_format = static_cast<DataFormat>(formats.pack_src);
 
     // srcAB hw_configure: srcA and srcB share the math format; Dest mode follows the
     // int / float split (int32 for integer formats, otherwise is_fp32_dest_acc_en).
-    if (src_format == DataFormat::Int32)
+    if (is_fp32_dest_acc_en && pack_src_format == DataFormat::Float32)
     {
-        _llk_math_srcAB_hw_configure_<false, false, true>(src_format, src_format);
+        _llk_math_srcAB_hw_configure_<IMPLIED_MATH_FORMAT, true /*fp32_dest*/, false /*int32_dest*/>(math_format, math_format);
+    }
+    else if (is_fp32_dest_acc_en && pack_src_format == DataFormat::Int32)
+    {
+        _llk_math_srcAB_hw_configure_<IMPLIED_MATH_FORMAT, false /*fp32_dest*/, true /*int32_dest*/>(math_format, math_format);
     }
     else
     {
-        _llk_math_srcAB_hw_configure_<false, is_fp32_dest_acc_en, false>(src_format, src_format);
+        _llk_math_srcAB_hw_configure_<IMPLIED_MATH_FORMAT, false /*fp32_dest*/, false /*int32_dest*/>(math_format, math_format);
     }
 
     // FPU-datacopy path: move both input tiles from SrcA into Dest at DST_INDEX + i.
@@ -180,7 +185,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
     // enabled, Dest holds INT32 sign-mag values regardless of the src width, so the
     // SFPU loads them via sfpmem::INT32. The kernel's LT0-guarded correction is a
     // no-op for unsigned-origin lanes (bit 31 always 0).
-    if (src_format == DataFormat::Int32)
+    if (math_format == DataFormat::Int32)
     {
         _llk_math_eltwise_unary_sfpu_params_(
             ckernel::sfpu::calculate_binary_max_min_int32<IS_MAX_OP, 8 /*ITERATIONS*/>,
