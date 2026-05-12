@@ -26,7 +26,7 @@ inline void calculate_right_shift(std::uint32_t dst_index_in, std::uint32_t dst_
         v_if(input < 0) { res = ~res; }
         v_endif;
 
-        dst_reg[(dst_index_out - dst_index_in) * 32] = res;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = res;
         dst_reg++;
     }
 }

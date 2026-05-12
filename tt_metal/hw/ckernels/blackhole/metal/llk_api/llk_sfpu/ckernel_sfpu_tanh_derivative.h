@@ -33,7 +33,7 @@ inline void calculate_tanh_derivative(std::uint32_t dst_index_in, std::uint32_t 
         }
 
         val = val * (-val) + vConst1;
-        dst_reg[(dst_index_out - dst_index_in) * 32] = val;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = val;
 
         dst_reg++;
     }
@@ -210,7 +210,7 @@ inline void calculate_tanh_derivative_sech2(std::uint32_t dst_index_in, std::uin
             result = sfpi::float_to_fp16b(result, sfpi::RoundMode::NearestEven);
         }
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }

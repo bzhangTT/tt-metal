@@ -66,7 +66,7 @@ inline void calculate_fmod(
         }
         v_if(sfpi::abs(v) - s == 0.0f) { v = 0.0f; }
         v_endif;
-        dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
         dst_reg++;
     }
 }

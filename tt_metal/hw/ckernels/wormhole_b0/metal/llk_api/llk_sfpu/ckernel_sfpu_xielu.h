@@ -97,7 +97,7 @@ sfpi_inline void _xielu_mad_(
     if constexpr (!is_fp32_dest_acc_en) {
         result = sfpi::float_to_fp16b(result, sfpi::RoundMode::NearestEven);
     }
-    sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+    sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
 }
 
 /*

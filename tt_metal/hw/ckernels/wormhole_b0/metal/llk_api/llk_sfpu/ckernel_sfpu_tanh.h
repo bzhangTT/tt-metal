@@ -127,7 +127,7 @@ inline void calculate_tanh(std::uint32_t dst_index_in, std::uint32_t dst_index_o
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat val = sfpi::dst_reg[0];
             val = sfpi::lut(val, l0, l1, l2);
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = val;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = val;
 
             sfpi::dst_reg++;
         }
@@ -150,7 +150,7 @@ inline void calculate_tanh(std::uint32_t dst_index_in, std::uint32_t dst_index_o
                 result = sfpi::float_to_fp16b(result, sfpi::RoundMode::NearestEven);
             }
 
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
             sfpi::dst_reg++;
         }
     }

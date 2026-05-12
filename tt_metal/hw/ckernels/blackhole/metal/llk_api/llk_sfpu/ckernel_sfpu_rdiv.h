@@ -36,7 +36,7 @@ inline void calculate_rdiv(std::uint32_t dst_index_in, std::uint32_t dst_index_o
         } else if constexpr (rounding_mode == RoundingMode::Floor) {
             result = _floor_body_(result);
         }
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }

@@ -56,7 +56,7 @@ inline void calculate_cube_root(std::uint32_t dst_index_in, std::uint32_t dst_in
             d = sfpi::setsgn(d, a);
             y = d * (t * t);
 
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = y;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = y;
         } else {
             sfpi::vFloat d = x * (y * y);
             sfpi::vFloat c = d * y;
@@ -64,7 +64,8 @@ inline void calculate_cube_root(std::uint32_t dst_index_in, std::uint32_t dst_in
             d = sfpi::setsgn(d, a);
             y = d * (t * t);
 
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::float_to_fp16b(y, sfpi::RoundMode::NearestEven);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
+                sfpi::float_to_fp16b(y, sfpi::RoundMode::NearestEven);
         }
         sfpi::dst_reg++;
     }

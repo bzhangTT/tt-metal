@@ -60,7 +60,7 @@ inline void add_int(std::uint32_t dst_index_in, std::uint32_t dst_index_out, con
 
         vInt r = a + b;
 
-        dst_reg[(dst_index_out - dst_index_in) * 32] = r;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = r;
         dst_reg++;
     }
 }

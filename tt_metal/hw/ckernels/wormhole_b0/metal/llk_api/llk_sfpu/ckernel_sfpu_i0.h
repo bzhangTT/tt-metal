@@ -45,7 +45,7 @@ inline void calculate_i0(std::uint32_t dst_index_in, std::uint32_t dst_index_out
                             0.25f,
                             x);
 
-        dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         dst_reg++;
     }
 }

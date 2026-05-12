@@ -52,7 +52,7 @@ void calculate_rsub_scalar_int32(std::uint32_t dst_index_in, std::uint32_t dst_i
         // specified in lreg_dest. The condition code register is not modified (2).
         TTI_SFPIADD(
             0, p_sfpu::LREG1, p_sfpu::LREG0, sfpi::SFPIADD_MOD1_ARG_2SCOMP_LREG_DST | sfpi::SFPIADD_MOD1_CC_NONE);
-        TT_SFPSTORE(p_sfpu::LREG0, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG0, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
         sfpi::dst_reg++;
     }
 }

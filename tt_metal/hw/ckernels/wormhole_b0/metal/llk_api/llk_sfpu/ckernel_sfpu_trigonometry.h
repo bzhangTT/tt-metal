@@ -149,9 +149,10 @@ inline void calculate_tangent(std::uint32_t dst_index_in, std::uint32_t dst_inde
         a = sfpu_tan<is_fp32_dest_acc_en>(a, i);
 
         if constexpr (is_fp32_dest_acc_en) {
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = a;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = a;
         } else {
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::float_to_fp16b(a, sfpi::RoundMode::NearestEven);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
+                sfpi::float_to_fp16b(a, sfpi::RoundMode::NearestEven);
         }
         sfpi::dst_reg++;
     }
@@ -217,13 +218,14 @@ inline void calculate_sine(std::uint32_t dst_index_in, std::uint32_t dst_index_o
             sfpi::vFloat c = a * s;
             r = r * s + C0;
             r = r * c + a;
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = r;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = r;
         } else {
             r = C2 * s + C1;
             sfpi::vFloat c = a * s;
             r = r * s + C0;
             r = r * c + a;
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::float_to_fp16b(r, sfpi::RoundMode::NearestEven);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
+                sfpi::float_to_fp16b(r, sfpi::RoundMode::NearestEven);
         }
 
         sfpi::dst_reg++;
@@ -303,13 +305,14 @@ inline void calculate_cosine(std::uint32_t dst_index_in, std::uint32_t dst_index
             sfpi::vFloat c = a * s;
             r = r * s + C0;
             r = r * c + a;
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = r;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = r;
         } else {
             sfpi::vFloat r = C2 * s + C1;
             sfpi::vFloat c = a * s;
             r = r * s + C0;
             r = r * c + a;
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::float_to_fp16b(r, sfpi::RoundMode::NearestEven);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
+                sfpi::float_to_fp16b(r, sfpi::RoundMode::NearestEven);
         }
 
         sfpi::dst_reg++;
@@ -380,7 +383,7 @@ inline void calculate_atan(std::uint32_t dst_index_in, std::uint32_t dst_index_o
             result = sfpi::float_to_fp16b(result, sfpi::RoundMode::NearestEven);
         }
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
 
         sfpi::dst_reg++;
     }
@@ -459,7 +462,7 @@ inline void calculate_asin_acos_impl(std::uint32_t dst_index_in, std::uint32_t d
             result = sfpi::float_to_fp16b(result, sfpi::RoundMode::NearestEven);
         }
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }
@@ -482,7 +485,7 @@ inline void calculate_cosh(std::uint32_t dst_index_in, std::uint32_t dst_index_o
         sfpi::vFloat v = sfpi::dst_reg[0];
         sfpi::vFloat result =
             (_sfpu_exp_21f_bf16_<is_fp32_dest_acc_en>(v) + _sfpu_exp_21f_bf16_<is_fp32_dest_acc_en>(-v)) * 0.5f;
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }
@@ -495,7 +498,7 @@ inline void calculate_sinh(std::uint32_t dst_index_in, std::uint32_t dst_index_o
         sfpi::vFloat v = sfpi::dst_reg[0];
         sfpi::vFloat result =
             (_sfpu_exp_21f_bf16_<is_fp32_dest_acc_en>(v) - _sfpu_exp_21f_bf16_<is_fp32_dest_acc_en>(-v)) * 0.5f;
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }

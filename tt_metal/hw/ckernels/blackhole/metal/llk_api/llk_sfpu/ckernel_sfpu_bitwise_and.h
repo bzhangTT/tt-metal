@@ -18,7 +18,7 @@ inline void calculate_bitwise_and(std::uint32_t dst_index_in, std::uint32_t dst_
     for (int d = 0; d < ITERATIONS; d++) {
         vInt input = dst_reg[0];
         vInt res = input & value;
-        dst_reg[(dst_index_out - dst_index_in) * 32] = res;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = res;
         dst_reg++;
     }
 }

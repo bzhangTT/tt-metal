@@ -15,7 +15,7 @@ inline void calculate_rpow(std::uint32_t dst_index_in, std::uint32_t dst_index_o
     sfpi::vFloat base_val_v = Converter::as_float(base_val);
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] =
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
             _sfpu_binary_power_<is_fp32_dest_acc_en>(base_val_v, sfpi::dst_reg[0]);
         sfpi::dst_reg++;
     }

@@ -44,7 +44,7 @@ void calculate_binop_with_scalar(std::uint32_t dst_index_in, std::uint32_t dst_i
             result = parameter - val;
         }
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }
@@ -84,7 +84,7 @@ void calculate_add_int32(std::uint32_t dst_index_in, std::uint32_t dst_index_out
         TT_SFPLOAD(p_sfpu::LREG0, INT32, ADDR_MOD_3, 0);
         TTI_SFPMOV(0, p_sfpu::LREG2, p_sfpu::LREG1, 0);  // Using mov to preserve the scalar value after each iteration
         TTI_SFPIADD(0, p_sfpu::LREG0, p_sfpu::LREG1, 4);
-        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_3, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_3, (dst_index_out - dst_index_in) * TILE_R_DIM);
         sfpi::dst_reg++;
     }
 }
@@ -101,7 +101,7 @@ void calculate_sub_int32(std::uint32_t dst_index_in, std::uint32_t dst_index_out
         TTI_SFPMOV(0, p_sfpu::LREG2, p_sfpu::LREG1, 0);
         // Used 6 as imod to convert operand B to 2's complement for sub operation
         TTI_SFPIADD(0, p_sfpu::LREG0, p_sfpu::LREG1, 6);
-        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_3, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_3, (dst_index_out - dst_index_in) * TILE_R_DIM);
         sfpi::dst_reg++;
     }
 }

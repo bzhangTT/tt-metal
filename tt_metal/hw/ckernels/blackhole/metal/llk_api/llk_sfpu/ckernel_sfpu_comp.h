@@ -63,7 +63,7 @@ inline void calculate_comp(std::uint32_t dst_index_in, std::uint32_t dst_index_o
             v_endif;
         }
 
-        dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
         dst_reg++;
     }
 }
@@ -116,7 +116,7 @@ inline void calculate_comp_int(std::uint32_t dst_index_in, std::uint32_t dst_ind
             v_endif;
         }
 
-        dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
         dst_reg++;
     }
 }
@@ -137,7 +137,7 @@ inline void calculate_comp_uint16(std::uint32_t dst_index_in, std::uint32_t dst_
         // end_if
         TTI_SFPENCC(0, 0, 0, 0);
         // store result
-        TT_SFPSTORE(p_sfpu::LREG1, LO16, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, LO16, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
         dst_reg++;
     }
 }
@@ -150,7 +150,7 @@ inline void calculate_eqz_uint32(std::uint32_t dst_index_in, std::uint32_t dst_i
         TT_SFPLOAD(p_sfpu::LREG0, INT32, ADDR_MOD_7, 0);
         TTI_SFPLZ(0, 0, 1, 4);    // result in lreg1 is leading zero count
         TTI_SFPSHFT(0, 2, 1, 0);  // 32 >> 5 = 1 else 0
-        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
         dst_reg++;
     }
 }
@@ -168,7 +168,7 @@ inline void calculate_nez_uint32(std::uint32_t dst_index_in, std::uint32_t dst_i
         // end_if
         TTI_SFPENCC(0, 0, 0, 0);
         // store result
-        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, INT32, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
         dst_reg++;
     }
 }
@@ -190,7 +190,7 @@ inline void calculate_comp_unary_int(std::uint32_t dst_index_in, std::uint32_t d
             v_if(v == scalar) { val = 1; }
             v_endif;
         }
-        dst_reg[(dst_index_out - dst_index_in) * 32] = val;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = val;
         dst_reg++;
     }
 }

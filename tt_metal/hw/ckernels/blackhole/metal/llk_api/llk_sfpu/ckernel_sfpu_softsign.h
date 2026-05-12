@@ -16,7 +16,7 @@ inline void calculate_softsign(std::uint32_t dst_index_in, std::uint32_t dst_ind
         sfpi::vFloat v = sfpi::dst_reg[0];
         sfpi::vFloat tmp = sfpi::abs(v) + sfpi::vConst1;
         tmp = sfpu_reciprocal<APPROXIMATION_MODE>(tmp);
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v * tmp;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v * tmp;
         sfpi::dst_reg++;
     }
 }

@@ -73,7 +73,7 @@ inline void calculate_erfc(std::uint32_t dst_index_in, std::uint32_t dst_index_o
         // erfc(-x) = 2 - erfc(x)
         v_if(x < 0.0f) { r = 2.0f - r; }
         v_endif;
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = r;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = r;
         sfpi::dst_reg++;
     }
 }

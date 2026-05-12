@@ -37,7 +37,7 @@ inline void calculate_logical_not(std::uint32_t dst_index_in, std::uint32_t dst_
         // INSTR_MOD1: 0 => condition code enable reg is not modified.
         TTI_SFPENCC(0, 0, 0, 0);
         // store result
-        TT_SFPSTORE(p_sfpu::LREG1, INSTRUCTION_MODE, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, INSTRUCTION_MODE, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
         sfpi::dst_reg++;
     }
 }

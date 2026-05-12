@@ -119,14 +119,14 @@ inline void calculate_expm1(std::uint32_t dst_index_in, std::uint32_t dst_index_
         // Use original approximation mode
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat v = sfpi::dst_reg[0];
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = _sfpu_expm1_<is_fp32_dest_acc_en>(v);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = _sfpu_expm1_<is_fp32_dest_acc_en>(v);
             sfpi::dst_reg++;
         }
     } else {
         // Use improved version based on destination precision
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat v = sfpi::dst_reg[0];
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = _sfpu_expm1_improved_<is_fp32_dest_acc_en>(v);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = _sfpu_expm1_improved_<is_fp32_dest_acc_en>(v);
             sfpi::dst_reg++;
         }
     }

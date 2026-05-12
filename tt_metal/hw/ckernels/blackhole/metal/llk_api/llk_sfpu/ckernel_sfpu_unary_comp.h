@@ -24,7 +24,7 @@ inline void calculate_unary_ne(std::uint32_t dst_index_in, std::uint32_t dst_ind
         v_else { v = 1.0f; }
         v_endif;
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
 
         sfpi::dst_reg++;
     }
@@ -42,7 +42,7 @@ inline void calculate_unary_eq(std::uint32_t dst_index_in, std::uint32_t dst_ind
         v_else { v = 0.0f; }
         v_endif;
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
 
         sfpi::dst_reg++;
     }
@@ -60,7 +60,7 @@ inline void calculate_unary_gt(std::uint32_t dst_index_in, std::uint32_t dst_ind
         v_else { v = 0.0f; }
         v_endif;
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
 
         sfpi::dst_reg++;
     }
@@ -78,7 +78,7 @@ inline void calculate_unary_lt(std::uint32_t dst_index_in, std::uint32_t dst_ind
         v_else { v = 0.0f; }
         v_endif;
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
 
         sfpi::dst_reg++;
     }
@@ -96,7 +96,7 @@ inline void calculate_unary_ge(std::uint32_t dst_index_in, std::uint32_t dst_ind
         v_else { v = 1.0f; }
         v_endif;
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
 
         sfpi::dst_reg++;
     }
@@ -114,7 +114,7 @@ inline void calculate_unary_le(std::uint32_t dst_index_in, std::uint32_t dst_ind
         v_else { v = 1.0f; }
         v_endif;
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
 
         sfpi::dst_reg++;
     }

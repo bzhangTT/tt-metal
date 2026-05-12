@@ -17,7 +17,7 @@ inline void calculate_abs(std::uint32_t dst_index_in, std::uint32_t dst_index_ou
     // SFPU microcode
     for (int d = 0; d < ITERATIONS; d++) {
         vFloat v = dst_reg[0];
-        dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::abs(v);
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = sfpi::abs(v);
         dst_reg++;
     }
 }
@@ -28,7 +28,7 @@ inline void calculate_abs_int32(std::uint32_t dst_index_in, std::uint32_t dst_in
     for (int d = 0; d < ITERATIONS; d++) {
         TT_SFPLOAD(1, 4, 3, 0);
         TTI_SFPABS(0, 1, 0, 0);
-        TT_SFPSTORE(0, 4, 3, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(0, 4, 3, (dst_index_out - dst_index_in) * TILE_R_DIM);
         dst_reg++;
     }
 }

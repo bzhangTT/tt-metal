@@ -47,7 +47,7 @@ inline void calculate_typecast_fp32_to_uint8(std::uint32_t dst_index_in, std::ui
         TTI_SFPIADD(256, p_sfpu::LREG1, p_sfpu::LREG1, sfpi::SFPIADD_MOD1_ARG_IMM | sfpi::SFPIADD_MOD1_CC_NONE);
         // result &= 0xFF
         TTI_SFPAND(0, p_sfpu::LREG12, p_sfpu::LREG1, 0);
-        TT_SFPSTORE(p_sfpu::LREG1, InstrModLoadStore::INT32, ADDR_MOD_6, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG1, InstrModLoadStore::INT32, ADDR_MOD_6, (dst_index_out - dst_index_in) * TILE_R_DIM);
     }
 }
 
@@ -62,7 +62,7 @@ inline void calculate_typecast_uint_to_uint8(std::uint32_t dst_index_in, std::ui
         }
         TTI_SFPIADD(256, p_sfpu::LREG0, p_sfpu::LREG0, sfpi::SFPIADD_MOD1_ARG_IMM | sfpi::SFPIADD_MOD1_CC_NONE);
         TTI_SFPAND(0, p_sfpu::LREG12, p_sfpu::LREG0, 0);
-        TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_6, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_6, (dst_index_out - dst_index_in) * TILE_R_DIM);
     }
 }
 

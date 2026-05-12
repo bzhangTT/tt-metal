@@ -70,7 +70,7 @@ inline void calculate_erfinv(std::uint32_t dst_index_in, std::uint32_t dst_index
 
         result = sfpi::setsgn(result, v);  // restore sign
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }

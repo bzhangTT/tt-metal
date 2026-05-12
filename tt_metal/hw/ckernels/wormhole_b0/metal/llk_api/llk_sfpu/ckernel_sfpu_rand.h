@@ -46,7 +46,7 @@ inline void rand(std::uint32_t dst_index_in, std::uint32_t dst_index_out, uint32
         TTI_SFPMAD(p_sfpu::LREG0, p_sfpu::LREG1, p_sfpu::LREG2, p_sfpu::LREG0, 0);
         TTI_SFPNOP;
 
-        TT_SFPSTORE(0, 3, 3, (dst_index_out - dst_index_in) * 32);
+        TT_SFPSTORE(0, 3, 3, (dst_index_out - dst_index_in) * TILE_R_DIM);
         dst_reg++;
     }
 }

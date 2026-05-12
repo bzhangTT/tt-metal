@@ -63,7 +63,7 @@ inline void calculate_digamma(std::uint32_t dst_index_in, std::uint32_t dst_inde
         sfpi::vFloat result =
             piecewise_rational_eval<DIGAMMA_NUM_DEGREE, DIGAMMA_DEN_DEGREE, DIGAMMA_NUM_SEGMENTS, DIGAMMA_LUT_SIZE>(
                 DIGAMMA_LUT, x);
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         sfpi::dst_reg++;
     }
 }

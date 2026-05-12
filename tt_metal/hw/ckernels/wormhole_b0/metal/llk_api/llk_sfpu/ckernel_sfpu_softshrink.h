@@ -16,9 +16,9 @@ inline void calculate_softshrink(std::uint32_t dst_index_in, std::uint32_t dst_i
     sfpi::vFloat lambda = Converter::as_float(param0);
     for (int d = 0; d < ITERATIONS; d++) {
         sfpi::vFloat v = sfpi::dst_reg[0];
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = sfpi::vConst0;
-        v_if(v > lambda) { sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v - lambda; }
-        v_elseif(v < (-lambda)) { sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = v + lambda; }
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = sfpi::vConst0;
+        v_if(v > lambda) { sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v - lambda; }
+        v_elseif(v < (-lambda)) { sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v + lambda; }
         v_endif;
         sfpi::dst_reg++;
     }

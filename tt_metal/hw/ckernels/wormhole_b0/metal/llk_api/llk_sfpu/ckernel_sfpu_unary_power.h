@@ -276,14 +276,14 @@ inline void _sfpu_unary_power_bf16_(std::uint32_t dst_index_in, std::uint32_t ds
 #pragma GCC unroll 8
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat base = sfpi::dst_reg[0];
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = _sfpu_unary_power_21f_<true>(base, pow);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = _sfpu_unary_power_21f_<true>(base, pow);
             sfpi::dst_reg++;
         }
     } else {
 #pragma GCC unroll 8
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat base = sfpi::dst_reg[0];
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = _sfpu_unary_power_21f_<false>(base, pow);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = _sfpu_unary_power_21f_<false>(base, pow);
             sfpi::dst_reg++;
         }
     }
@@ -299,14 +299,16 @@ inline void _sfpu_unary_power_fp32_(std::uint32_t dst_index_in, std::uint32_t ds
 #pragma GCC unroll 8
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat base = sfpi::dst_reg[0];
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = _sfpu_unary_power_61f_updated_<true>(base, pow);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
+                _sfpu_unary_power_61f_updated_<true>(base, pow);
             sfpi::dst_reg++;
         }
     } else {
 #pragma GCC unroll 8
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat base = sfpi::dst_reg[0];
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = _sfpu_unary_power_61f_updated_<false>(base, pow);
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] =
+                _sfpu_unary_power_61f_updated_<false>(base, pow);
             sfpi::dst_reg++;
         }
     }
@@ -339,7 +341,7 @@ inline void calculate_unary_power_iterative(
     for (int d = 0; d < ITERATIONS; d++) {
         sfpi::vFloat in = sfpi::dst_reg[0];
         if (exponent == 0) {
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = 1.0f;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = 1.0f;
         } else {
             sfpi::vFloat result = in;
             uint32_t exp = exponent - 1;
@@ -351,7 +353,7 @@ inline void calculate_unary_power_iterative(
                 in *= in;
                 exp >>= 1;
             }
-            sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = result;
+            sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = result;
         }
         sfpi::dst_reg++;
     }

@@ -25,7 +25,7 @@ inline void calculate_signbit(std::uint32_t dst_index_in, std::uint32_t dst_inde
     //    | ...  |                        |     |            | [a] L16  |
 
     const int in_offset = 0;
-    const int out_offset = (dst_index_out - dst_index_in) * 32;
+    const int out_offset = (dst_index_out - dst_index_in) * TILE_R_DIM;
 
 #ifndef DISABLE_SFPLOADMACRO
 #pragma GCC unroll 8
@@ -59,7 +59,7 @@ inline void calculate_signbit_int32(std::uint32_t dst_index_in, std::uint32_t ds
     //    | ...  |        |     |                   | [a] L16  |
 
     const int in_offset = 0;
-    const int out_offset = (dst_index_out - dst_index_in) * 32;
+    const int out_offset = (dst_index_out - dst_index_in) * TILE_R_DIM;
 
 #ifndef DISABLE_SFPLOADMACRO
 #pragma GCC unroll 8

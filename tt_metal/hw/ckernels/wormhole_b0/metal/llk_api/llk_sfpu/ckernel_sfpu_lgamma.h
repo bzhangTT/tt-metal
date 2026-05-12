@@ -47,7 +47,7 @@ inline void calculate_lgamma_stirling(std::uint32_t dst_index_in, std::uint32_t 
         if constexpr (!is_fp32_dest_acc_en) {
             res = sfpi::float_to_fp16b(res, sfpi::RoundMode::NearestEven);
         }
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = res;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = res;
         sfpi::dst_reg++;
     }
 }

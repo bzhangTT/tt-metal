@@ -21,7 +21,7 @@ inline void calculate_identity(std::uint32_t dst_index_in, std::uint32_t dst_ind
 #pragma GCC unroll 0
     for (int d = 0; d < ITERATIONS; d++) {
         vFloat v = dst_reg[0];
-        dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
         dst_reg++;
     }
 }
@@ -31,7 +31,7 @@ inline void calculate_identity_uint(std::uint32_t dst_index_in, std::uint32_t ds
 #pragma GCC unroll 0
     for (int d = 0; d < ITERATIONS; d++) {
         vUInt v = dst_reg[0];
-        dst_reg[(dst_index_out - dst_index_in) * 32] = v;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = v;
         dst_reg++;
     }
 }

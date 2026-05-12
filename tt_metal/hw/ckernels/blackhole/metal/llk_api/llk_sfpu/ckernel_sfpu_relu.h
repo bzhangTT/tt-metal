@@ -21,7 +21,7 @@ inline void relu_min(std::uint32_t dst_index_in, std::uint32_t dst_index_out, ui
         vFloat a = dst_reg[0];
         v_if(a < threshold) { a = threshold; }
         v_endif;
-        dst_reg[(dst_index_out - dst_index_in) * 32] = a;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = a;
         dst_reg++;
     }
 }
@@ -35,7 +35,7 @@ inline void relu_max(std::uint32_t dst_index_in, std::uint32_t dst_index_out, ui
         v_endif;
         v_if(a < 0.0f) { a = 0.0f; }
         v_endif;
-        dst_reg[(dst_index_out - dst_index_in) * 32] = a;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = a;
         dst_reg++;
     }
 }

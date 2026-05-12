@@ -35,7 +35,7 @@ inline void hardmish(std::uint32_t dst_index_in, std::uint32_t dst_index_out) {
         sfpi::vec_min_max(low_bound, scale);   // scale = max(scale, 0.0)
         sfpi::vec_min_max(scale, high_bound);  // scale = min(scale, 1.0)
 
-        sfpi::dst_reg[(dst_index_out - dst_index_in) * 32] = x * scale;
+        sfpi::dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = x * scale;
         sfpi::dst_reg++;
     }
 }

@@ -20,7 +20,8 @@ inline void calculate_clamp(std::uint32_t dst_index_in, std::uint32_t dst_index_
         load_value_param_float(min_val);
         calculate_unary_max_min_float_body<Max>(dst_index_in, dst_index_out);
         load_value_param_float(max_val);
-        calculate_unary_max_min_float_body<Min>(dst_index_in, dst_index_out, (dst_index_out - dst_index_in) * 32);
+        calculate_unary_max_min_float_body<Min>(
+            dst_index_in, dst_index_out, (dst_index_out - dst_index_in) * TILE_R_DIM);
         sfpi::dst_reg++;
     }
 }
@@ -32,7 +33,7 @@ inline void calculate_clamp_int32(std::uint32_t dst_index_in, std::uint32_t dst_
         calculate_unary_max_min_int32_body<Max>(dst_index_in, dst_index_out, min_val);
         load_value_param_int(max_val);
         calculate_unary_max_min_int32_body<Min>(
-            dst_index_in, dst_index_out, max_val, (dst_index_out - dst_index_in) * 32);
+            dst_index_in, dst_index_out, max_val, (dst_index_out - dst_index_in) * TILE_R_DIM);
         sfpi::dst_reg++;
     }
 }

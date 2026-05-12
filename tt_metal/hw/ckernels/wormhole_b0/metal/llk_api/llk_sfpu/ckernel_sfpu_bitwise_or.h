@@ -19,7 +19,7 @@ inline void calculate_bitwise_or(std::uint32_t dst_index_in, std::uint32_t dst_i
             res = 0 - res;
             res = setsgn(res, scalar_value);
         }
-        v_endif dst_reg[(dst_index_out - dst_index_in) * 32] = res;
+        v_endif dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = res;
         dst_reg++;
     }
 }

@@ -15,7 +15,7 @@ sfpi_inline void load_value_param_float(uint value) { sfpi::vConstIntPrgm0 = val
 template <bool IS_MAX_OP>
 sfpi_inline void calculate_unary_max_min_float_body(
     std::uint32_t dst_index_in, std::uint32_t dst_index_out, int load_offset = 0) {
-    int store_offset = (dst_index_out - dst_index_in) * 32;
+    int store_offset = (dst_index_out - dst_index_in) * TILE_R_DIM;
     sfpi::l_reg[sfpi::LRegs::LReg0].in_use();
     if (load_offset != 0) {
         TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_3, load_offset);
@@ -82,7 +82,7 @@ sfpi_inline void load_value_param_int(uint value) {
 template <bool IS_MAX_OP, bool IS_UNSIGNED = false>
 sfpi_inline void calculate_unary_max_min_int32_body(
     std::uint32_t dst_index_in, std::uint32_t dst_index_out, uint value, int load_offset = 0) {
-    int store_offset = (dst_index_out - dst_index_in) * 32;
+    int store_offset = (dst_index_out - dst_index_in) * TILE_R_DIM;
     sfpi::l_reg[sfpi::LRegs::LReg0].in_use();
     if (load_offset != 0) {
         TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::INT32, ADDR_MOD_3, load_offset);

@@ -22,7 +22,7 @@ inline void calculate_sigmoid_appx(std::uint32_t dst_index_in, std::uint32_t dst
     for (int d = 0; d < ITERATIONS; d++) {
         vFloat val = dst_reg[0];
 
-        dst_reg[(dst_index_out - dst_index_in) * 32] = lut(val, l0, l1, l2) + 0.5f;
+        dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = lut(val, l0, l1, l2) + 0.5f;
 
         dst_reg++;
     }

@@ -21,7 +21,9 @@ inline void calculate_mask(std::uint32_t dst_index_in, std::uint32_t dst_index_o
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
         vFloat mask = dst_reg[mask_val_idx];
-        v_if(_sfpu_is_fp16_zero_(mask, exponent_size_8)) { dst_reg[(dst_index_out - dst_index_in) * 32] = vConst0; }
+        v_if(_sfpu_is_fp16_zero_(mask, exponent_size_8)) {
+            dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = vConst0;
+        }
         v_endif;
         dst_reg++;
     }
@@ -33,7 +35,7 @@ inline void calculate_int_mask(std::uint32_t dst_index_in, std::uint32_t dst_ind
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
         vInt mask = dst_reg[mask_idx];
-        v_if(mask == 0) { dst_reg[(dst_index_out - dst_index_in) * 32] = vConst0; }
+        v_if(mask == 0) { dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = vConst0; }
         v_endif;
         dst_reg++;
     }
@@ -47,7 +49,7 @@ inline void calculate_mask_posinf(std::uint32_t dst_index_in, std::uint32_t dst_
     for (int d = 0; d < ITERATIONS; d++) {
         vFloat mask = dst_reg[mask_val_idx];
         v_if(_sfpu_is_fp16_zero_(mask, exponent_size_8)) {
-            dst_reg[(dst_index_out - dst_index_in) * 32] = std::numeric_limits<float>::infinity();
+            dst_reg[(dst_index_out - dst_index_in) * TILE_R_DIM] = std::numeric_limits<float>::infinity();
         }
         v_endif;
         dst_reg++;

@@ -26,14 +26,20 @@ inline void calculate_hardtanh(std::uint32_t dst_index_in, std::uint32_t dst_ind
         TTI_SFPMOV(0, p_sfpu::LREG2, p_sfpu::LREG1, 0);
         TTI_SFPSWAP(0, p_sfpu::LREG1, p_sfpu::LREG0, 1 /* smaller value to LREG0 */);
         TT_SFPSTORE(
-            p_sfpu::LREG1, InstrModLoadStore::DEFAULT, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);  // store max
+            p_sfpu::LREG1,
+            InstrModLoadStore::DEFAULT,
+            ADDR_MOD_7,
+            (dst_index_out - dst_index_in) * TILE_R_DIM);  // store max
 
         // x = min(x, max_val) using LREG3 — load from output offset where max result was stored
-        TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);
+        TT_SFPLOAD(p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, (dst_index_out - dst_index_in) * TILE_R_DIM);
         TTI_SFPMOV(0, p_sfpu::LREG3, p_sfpu::LREG1, 0);
         TTI_SFPSWAP(0, p_sfpu::LREG1, p_sfpu::LREG0, 1 /* smaller value to LREG0 */);
         TT_SFPSTORE(
-            p_sfpu::LREG0, InstrModLoadStore::DEFAULT, ADDR_MOD_7, (dst_index_out - dst_index_in) * 32);  // store min
+            p_sfpu::LREG0,
+            InstrModLoadStore::DEFAULT,
+            ADDR_MOD_7,
+            (dst_index_out - dst_index_in) * TILE_R_DIM);  // store min
 
         sfpi::dst_reg++;
     }
