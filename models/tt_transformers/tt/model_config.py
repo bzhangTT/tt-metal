@@ -1596,7 +1596,7 @@ class ModelArgs:
                 )
         elif mode == Mode.PREFILL:
             self.MAX_QKV_MM_SEQ_LEN = 2048
-            if seq_len > 128:
+            if self.use_minimal_qkv_prefill_matmul(seq_len):
                 return ttnn.MinimalMatmulConfig(
                     M_block_size=8,
                     K_block_size=8,
@@ -1628,6 +1628,18 @@ class ModelArgs:
                 )
         else:
             raise ValueError(f"Invalid mode: {mode}")
+
+    def use_minimal_qkv_prefill_matmul(self, seq_len: int) -> bool:
+        if seq_len > 128:
+            return True
+
+        is_galaxy_8_device_row_submesh = (
+            self.mesh_device is not None
+            and self.num_devices == 8
+            and tuple(self.mesh_device.shape) == (1, 8)
+            and ttnn.cluster.get_cluster_type() == ttnn.cluster.ClusterType.GALAXY
+        )
+        return self.base_model_name == "Llama-3.1-8B" and seq_len == 128 and is_galaxy_8_device_row_submesh
 
     @lru_cache(maxsize=None)
     def get_attn_qkv_mm_mem_config(self, mode: Mode, prefetcher: Prefetcher = None):
@@ -2443,18 +2455,6 @@ class ModelArgs:
         return local_params
 
     def is_distributed_norm(self, mode: Mode):
-        is_galaxy_8_device_row_submesh = (
-            self.mesh_device is not None
-            and self.num_devices == 8
-            and tuple(self.mesh_device.shape) == (1, 8)
-            and ttnn.cluster.get_cluster_type() == ttnn.cluster.ClusterType.GALAXY
-        )
-        if (
-            self.base_model_name == "Llama-3.1-8B"
-            and mode == Mode.PREFILL
-            and is_galaxy_8_device_row_submesh
-        ):
-            return True
         if not self.is_multichip:
             return False
         if all([dim > 1 for dim in list(self.mesh_device.shape)]):  # 2D grid
