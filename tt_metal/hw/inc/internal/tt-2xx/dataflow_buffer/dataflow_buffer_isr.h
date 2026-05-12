@@ -32,8 +32,10 @@ inline __attribute__((always_inline)) void dfb_tile_poster_irq_handler() {
         pending &= (pending - 1);
     }
     if ((fired_trids >> 32) != 0) {
+        uint64_t current_ip =
+            CMDBUF_RD_REG(OVERLAY_RD_CMD_BUF, TT_ROCC_ACCEL_TT_ROCC_CPU0_CMD_BUF_R_PER_TR_ID_IP_1_REG_OFFSET);
         uint64_t to_clear = (fired_trids >> 32) & 0xFFFFFFFFULL;
-        uint64_t clear_val = fired_trids & ~(to_clear << 32);
+        uint64_t clear_val = current_ip & ~(to_clear << 32);
         CMDBUF_WR_REG(OVERLAY_RD_CMD_BUF, TT_ROCC_ACCEL_TT_ROCC_CPU0_CMD_BUF_R_PER_TR_ID_IP_1_REG_OFFSET, clear_val);
     }
 #endif
@@ -61,8 +63,10 @@ inline __attribute__((always_inline)) void dfb_tile_acker_irq_handler() {
         pending &= (pending - 1);
     }
     if ((fired_trids & 0xFFFFFFFFULL) != 0) {
+        uint64_t current_ip =
+            CMDBUF_RD_REG(OVERLAY_WR_CMD_BUF, TT_ROCC_ACCEL_TT_ROCC_CPU0_CMD_BUF_R_PER_TR_ID_IP_2_REG_OFFSET);
         uint64_t to_clear = fired_trids & 0xFFFFFFFFULL;
-        uint64_t clear_val = fired_trids & ~to_clear;
+        uint64_t clear_val = current_ip & ~to_clear;
         CMDBUF_WR_REG(OVERLAY_WR_CMD_BUF, TT_ROCC_ACCEL_TT_ROCC_CPU0_CMD_BUF_R_PER_TR_ID_IP_2_REG_OFFSET, clear_val);
     }
 #endif
