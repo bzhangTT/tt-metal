@@ -1062,6 +1062,81 @@ void read_block(
     cb_push_back(cb_id, num_tiles);
 }
 
+// Hot-path overload for the PaddedAddrGenerator case. The generic fetch_block above calls
+// maybe_read_tile per tile, which re-runs tensor_shape.id_of (4 muls + 3 adds) and re-evaluates
+// the d2 bounds predicate. Both depend only on row, not column, so we hoist:
+//   - the bounds clamp to one min() at entry (valid_rows count),
+//   - the row-base tile id to one id_of(d0, d1, d2_start, d3_start) at entry,
+//   - per-tile advancement to ++tile_id inside the col loop, matching read_chunk_with_padding.
+// Semantics are identical to the generic overload (predicate d2 < shape[2] && d2 < end_seq_tile;
+// out-of-bounds rows zero-filled), but the inner loop's instruction count drops to that of the
+// non-padded single-chip path. Overload resolution prefers this for any PaddedAddrGenerator
+// caller; CatAddrGenerator and other generator types continue to use the generic version above.
+template <typename ReaderType>
+void fetch_block(
+    const PaddedAddrGenerator<ReaderType>& gen,
+    const Slice& src_slice,
+    const uint32_t end_seq_tile,
+    const uint32_t dst_addr,
+    const uint32_t tile_bytes,
+    const bool transpose,
+    const uint32_t barrier_threshold = 0) {
+    const uint32_t src_rows = src_slice.get_d2_size();
+    const uint32_t src_cols = src_slice.get_d3_size();
+    const uint32_t outer_ptr_stride = transpose ? tile_bytes : src_cols * tile_bytes;
+    const uint32_t inner_ptr_stride = transpose ? tile_bytes * src_rows : tile_bytes;
+
+    const uint32_t shape_d2 = gen.tensor_shape.shape[2];
+    const uint32_t bound = shape_d2 < end_seq_tile ? shape_d2 : end_seq_tile;
+    const uint32_t valid_rows = (src_slice.d2_start >= bound) ? 0 : std::min(src_rows, bound - src_slice.d2_start);
+
+    const uint32_t row_stride = gen.tensor_shape.strides[2];  // == shape[3]
+    uint32_t tile_id = gen.tensor_shape.id_of(src_slice.d0, src_slice.d1, src_slice.d2_start, src_slice.d3_start);
+
+    uint32_t barrier_count = 0;
+    for (uint32_t row = 0; row < valid_rows; ++row) {
+        uint32_t write_ptr = dst_addr + row * outer_ptr_stride;
+        for (uint32_t col = 0; col < src_cols; ++col) {
+            noc_async_read_tile(tile_id, gen.reader, write_ptr);
+            tile_id += 1;
+            write_ptr += inner_ptr_stride;
+            if (barrier_threshold > 0 && ++barrier_count == barrier_threshold) {
+                noc_async_read_barrier();
+                barrier_count = 0;
+            }
+        }
+        tile_id += row_stride - src_cols;
+    }
+
+    for (uint32_t row = valid_rows; row < src_rows; ++row) {
+        uint32_t write_ptr = dst_addr + row * outer_ptr_stride;
+        for (uint32_t col = 0; col < src_cols; ++col) {
+            if constexpr (has_get_aligned_page_size_v<ReaderType>) {
+                fill_zeros_async(write_ptr, gen.reader.get_aligned_page_size());
+            } else {
+                fill_zeros_async(write_ptr, gen.reader.page_size);
+            }
+            write_ptr += inner_ptr_stride;
+        }
+    }
+    noc_async_read_barrier();
+}
+
+template <typename ReaderType>
+void read_block(
+    const PaddedAddrGenerator<ReaderType>& gen,
+    const Slice& src_slice,
+    const uint32_t end_seq_tile,
+    const uint32_t cb_id,
+    const uint32_t tile_bytes,
+    const bool transpose,
+    const uint32_t barrier_threshold = 0) {
+    const uint32_t num_tiles = src_slice.get_d2_size() * src_slice.get_d3_size();
+    cb_reserve_back(cb_id, num_tiles);
+    fetch_block(gen, src_slice, end_seq_tile, get_write_ptr(cb_id), tile_bytes, transpose, barrier_threshold);
+    cb_push_back(cb_id, num_tiles);
+}
+
 template <typename CatAddrGeneratorType>
 void write_block(
     const CatAddrGeneratorType& cat_addr_generator,
