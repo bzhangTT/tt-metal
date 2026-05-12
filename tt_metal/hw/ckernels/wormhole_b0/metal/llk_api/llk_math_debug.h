@@ -9,16 +9,11 @@
 
 inline std::uint32_t llk_math_get_compute_special_value_flags() { return _llk_math_get_compute_special_value_flags_(); }
 
-inline std::uint32_t llk_math_get_compute_special_value_flags_fpu(std::uint32_t special_value_flags_reg) {
-    constexpr std::uint32_t special_value_flags_fpu_mask = 0x7;
-    constexpr std::uint32_t special_value_flags_fpu_shift = 4;
-    return (special_value_flags_reg & special_value_flags_fpu_mask) >> special_value_flags_fpu_shift;
-}
-
-inline std::uint32_t llk_math_get_compute_special_value_flags_sfpu(std::uint32_t special_value_flags_reg) {
-    constexpr std::uint32_t special_value_flags_sfpu_mask = 0xf;
-    constexpr std::uint32_t special_value_flags_sfpu_shift = 0;
-    return (special_value_flags_reg & special_value_flags_sfpu_mask) >> special_value_flags_sfpu_shift;
+template <bool isFpu>
+inline std::uint32_t llk_math_extract_compute_special_value_flags(std::uint32_t special_value_flags_reg) {
+    constexpr std::uint32_t special_value_flags_mask = isFpu ? 0x7 : 0xf;
+    constexpr std::uint32_t special_value_flags_shift = isFpu ? 4 : 0;
+    return (special_value_flags_reg & special_value_flags_mask) >> special_value_flags_shift;
 }
 
 inline void llk_math_clear_compute_special_value_flags() { _llk_math_clear_compute_special_value_flags_(); }

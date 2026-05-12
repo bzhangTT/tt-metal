@@ -7,15 +7,6 @@
 #include "api/compute/common.h"
 #include "api/compute/sentinel/compute_kernel_sentinel.h"
 
-#ifndef ARCH_QUASAR
-#ifdef TRISC_MATH
-#include "llk_math_debug.h"
-#endif
-#ifdef TRISC_PACK
-#include "llk_pack_api.h"
-#endif
-#endif
-
 #ifdef TRISC_UNPACK
 #include "llk_unpack_common_api.h"
 #endif

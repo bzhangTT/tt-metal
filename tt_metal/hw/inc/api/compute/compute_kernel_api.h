@@ -989,21 +989,17 @@ ALWI uint32_t get_compute_special_value_flags() {
 
 ALWI uint32_t get_compute_special_value_flags_fpu(uint32_t special_value_flags_reg) {
     uint32_t ret_val = 0;
-    MATH((ret_val = llk_math_get_compute_special_value_flags_fpu(special_value_flags_reg)));
+    MATH((ret_val = llk_math_extract_compute_special_value_flags<true /* isFpu */>(special_value_flags_reg)));
     return ret_val;
 }
 
 ALWI uint32_t get_compute_special_value_flags_sfpu(uint32_t special_value_flags_reg) {
     uint32_t ret_val = 0;
-    MATH((ret_val = llk_math_get_compute_special_value_flags_sfpu(special_value_flags_reg)));
+    MATH((ret_val = llk_math_extract_compute_special_value_flags<false /* isFpu */>(special_value_flags_reg)));
     return ret_val;
 }
 
 ALWI void clear_compute_special_value_flags() { MATH((llk_math_clear_compute_special_value_flags())); }
-
-ALWI void store_compute_special_value_flags_to_l1(uint32_t l1_addr) {
-    MATH((llk_math_store_compute_special_value_flags_to_l1(l1_addr)));
-}
 
 #endif
 
