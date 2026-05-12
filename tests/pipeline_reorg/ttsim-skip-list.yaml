@@ -68,7 +68,7 @@ wormhole_b0:
 
   # ERROR: UnsupportedFunctionality: tensix_execute_sfploadmacro: macro_index=1 sequence=0x00000085
   # TODO: Link to issue
-  - tests/ttnn/unit_tests/operations/reduce/test_max_min_int32.py
+  - tests/ttnn/unit_tests/operations/reduce/test_min_max_sfpu.py
 
 blackhole:
   # Job-level timeouts
@@ -122,4 +122,4 @@ blackhole:
 
   # ERROR: UnimplementedFunctionality: tensix_execute_sfpshft2: instr_mod1=4
   # TODO: Link to issue
-  - tests/ttnn/unit_tests/operations/reduce/test_max_min_int32.py
+  - tests/ttnn/unit_tests/operations/reduce/test_min_max_sfpu.py
