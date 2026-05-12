@@ -5,8 +5,27 @@
 #pragma once
 
 #include "common_globals.h"
+#include "sentinel/compute_kernel_sentinel.h"
 
 namespace ckernel {
+
+// clang-format off
+/**
+ * Initializes the packer to pack tiles into the specified output circular buffer.
+ *
+ * Call this function before using `pack_tile` or `pack_tile_block`.
+ *
+ * Return value: None
+ *
+ * | Param Type | Name | Description                                       | Type     | Valid Range | Required |
+ * |------------|------|---------------------------------------------------|----------|-------------|----------|
+ * | Function   | ocb  | The identifier of the output circular buffer (CB) | uint32_t | 0 to 31     | True     |
+ */
+// clang-format on
+ALWI void pack_init(uint32_t ocb, uint32_t call_line = __builtin_LINE()) {
+    state_configure<Operand::PACK>(ocb, call_line);
+    PACK((llk_pack_init(ocb)));
+}
 
 // clang-format off
 /**
