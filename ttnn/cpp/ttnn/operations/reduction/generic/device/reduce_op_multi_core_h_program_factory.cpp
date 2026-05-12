@@ -58,7 +58,9 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreHProgramFa
     const bool use_post_mul = operation_attributes.post_mul_scaler != 1.0f;
 
     // Int32 max/min uses SFPU reduce path
-    const bool use_sfpu_int32_path = a.dtype() == DataType::INT32 && operation_attributes.math_op == ReduceOpMath::MAX;
+    const bool use_sfpu_int32_path =
+        a.dtype() == DataType::INT32 &&
+        (operation_attributes.math_op == ReduceOpMath::MAX || operation_attributes.math_op == ReduceOpMath::SUM);
     const bool use_fpu_negate = operation_attributes.negate && !use_sfpu_int32_path;
 
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();

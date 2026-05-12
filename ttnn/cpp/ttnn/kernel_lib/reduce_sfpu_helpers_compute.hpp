@@ -28,7 +28,7 @@
  * - Packer reduce mask setup (sfpu_reduce does not configure it; this helper does)
  *
  * Within-tile reduction uses SFPU `sfpu_reduce`; cross-tile folds along the reduce axis use
- * `binary_max_int32_tile` / `binary_min_int32_tile`.
+ * `binary_max_int32_tile` / `binary_min_int32_tile` / `add_int_tile` (MAX / MIN / SUM).
  *
  * IMPORTANT: Do not call `compute_kernel_hw_startup()` before `reduce_sfpu`. This helper runs
  * on the SFPU path and calls `init_sfpu` / `copy_tile_to_dst_init_short` itself.
@@ -60,7 +60,7 @@ namespace compute_kernel_lib {
 /**
  * @brief SFPU reduce for Int32 along one tile axis (templates match host REDUCE_* defines).
  *
- * @tparam pool_type   PoolType::MAX
+ * @tparam pool_type   PoolType::MAX, PoolType::MIN, or PoolType::SUM
  * @tparam reduce_dim  ReduceDim::REDUCE_ROW (W) or ReduceDim::REDUCE_COL (H).
  * @tparam format      DataFormat::Int32 (only supported format).
  *

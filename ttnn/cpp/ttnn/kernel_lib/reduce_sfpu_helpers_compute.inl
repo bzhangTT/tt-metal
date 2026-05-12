@@ -7,6 +7,7 @@
 
 #include <cstdint>
 
+#include "api/compute/add_int_sfpu.h"
 #include "api/compute/binary_max_min.h"
 #include "api/compute/cb_api.h"
 #include "api/compute/compute_kernel_api.h"
@@ -39,8 +40,10 @@ ALWI void sfpu_reduce_binary_fold_init() {
     static_assert(format == DataFormat::Int32, "reduce_sfpu binary fold: Int32 only");
     if constexpr (pool_type == ckernel::PoolType::MAX) {
         binary_max_int32_tile_init();
-    } else {
+    } else if constexpr (pool_type == ckernel::PoolType::MIN) {
         binary_min_int32_tile_init();
+    } else if constexpr (pool_type == ckernel::PoolType::SUM) {
+        add_int_tile_init();
     }
 }
 
@@ -49,8 +52,10 @@ ALWI void sfpu_reduce_binary_fold_tile(uint32_t a, uint32_t b, uint32_t out) {
     static_assert(format == DataFormat::Int32, "reduce_sfpu binary fold: Int32 only");
     if constexpr (pool_type == ckernel::PoolType::MAX) {
         binary_max_int32_tile(a, b, out);
-    } else {
+    } else if constexpr (pool_type == ckernel::PoolType::MIN) {
         binary_min_int32_tile(a, b, out);
+    } else if constexpr (pool_type == ckernel::PoolType::SUM) {
+        add_int_tile<format>(a, b, out);
     }
 }
 
@@ -70,8 +75,9 @@ ALWI void reduce_sfpu(
     (void)post_mul_scaler_bits;
 #endif
     static_assert(
-        pool_type == ckernel::PoolType::MAX || pool_type == ckernel::PoolType::MIN,
-        "reduce_sfpu: MAX or MIN only");
+        pool_type == ckernel::PoolType::MAX || pool_type == ckernel::PoolType::MIN ||
+            pool_type == ckernel::PoolType::SUM,
+        "reduce_sfpu: MAX, MIN, or SUM only");
     static_assert(
         reduce_dim == ckernel::ReduceDim::REDUCE_ROW || reduce_dim == ckernel::ReduceDim::REDUCE_COL,
         "reduce_sfpu: REDUCE_ROW or REDUCE_COL only");
@@ -83,9 +89,9 @@ ALWI void reduce_sfpu(
     constexpr uint32_t onetile = 1;
 
     // Two DST registers used per output tile:
-    //   acc_dst  - running max/min (initialised from the first input tile)
-    //   work_dst - holds each subsequent input tile while binary_*_int32_tile
-    //              folds it into acc_dst element-wise.
+    //   acc_dst  - running accumulate / max / min (initialised from the first input tile)
+    //   work_dst - holds each subsequent input tile while binary_*_int32_tile or
+    //              add_int_tile folds it into acc_dst element-wise.
     constexpr uint32_t acc_dst = 0;
     constexpr uint32_t work_dst = 1;
 

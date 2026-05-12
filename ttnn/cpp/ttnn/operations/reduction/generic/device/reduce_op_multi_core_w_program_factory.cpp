@@ -103,7 +103,9 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
     uint32_t post_mul_scaler_bits = std::bit_cast<uint32_t>(operation_attributes.post_mul_scaler);
 
     // Int32 max/min uses SFPU reduce path
-    const bool use_sfpu_int32_path = a.dtype() == DataType::INT32 && operation_attributes.math_op == ReduceOpMath::MAX;
+    const bool use_sfpu_int32_path =
+        a.dtype() == DataType::INT32 &&
+        (operation_attributes.math_op == ReduceOpMath::MAX || operation_attributes.math_op == ReduceOpMath::SUM);
     const bool use_fpu_negate = operation_attributes.negate && !use_sfpu_int32_path;
 
     tt_metal::Buffer* src_buffer = a.buffer();

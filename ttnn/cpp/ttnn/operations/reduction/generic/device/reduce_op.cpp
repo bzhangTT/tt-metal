@@ -159,11 +159,11 @@ Tensor reduce(
     // This applies equally to MAX (negate=false) and MIN (lowered to MAX with
     // negate=true by ttnn::reduction::common.cpp), since both end up calling
     // into the SFPU INT32 program factories per-axis.
-    const bool use_two_step_hw_reduce_for_int32_max = (reduce_dim == tt::tt_metal::ReduceOpDim::HW) &&
-                                                      (tilized_input.dtype() == tt::tt_metal::DataType::INT32) &&
-                                                      (reduce_math == tt::tt_metal::ReduceOpMath::MAX);
+    const bool use_two_step_hw_reduce_for_int32 =
+        (reduce_dim == tt::tt_metal::ReduceOpDim::HW) && (tilized_input.dtype() == tt::tt_metal::DataType::INT32) &&
+        (reduce_math == tt::tt_metal::ReduceOpMath::MAX || reduce_math == tt::tt_metal::ReduceOpMath::SUM);
 
-    if (is_multicore_hw || use_two_step_hw_reduce_for_int32_max ||
+    if (is_multicore_hw || use_two_step_hw_reduce_for_int32 ||
         (reduce_dim == tt::tt_metal::ReduceOpDim::HW && reduce_scaler < 0)) {
         // Multi-core HW reduction: first reduce W, then reduce H on the result.
         // For the Sum chain's terminal fp32->bf16 stage, keep W in fp32 so only H packs to bf16.
