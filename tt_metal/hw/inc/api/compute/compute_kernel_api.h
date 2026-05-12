@@ -981,6 +981,7 @@ ALWI void unary_min_tile(uint32_t idst, uint32_t param0) {
  */
 ALWI void unary_min_tile_init() { MATH((llk_math_eltwise_unary_sfpu_unary_min_init())); }
 
+#if defined(ARCH_BLACKHOLE) || defined(ARCH_WORMHOLE)
 ALWI uint32_t get_compute_special_value_flags() {
     uint32_t ret_val = 0;
     MATH((ret_val = llk_math_get_compute_special_value_flags()));
@@ -1000,6 +1001,7 @@ ALWI uint32_t get_compute_special_value_flags_sfpu(uint32_t special_value_flags_
 }
 
 ALWI void clear_compute_special_value_flags() { MATH((llk_math_clear_compute_special_value_flags())); }
+#endif
 
 #endif
 
