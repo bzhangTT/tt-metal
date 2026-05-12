@@ -2443,6 +2443,18 @@ class ModelArgs:
         return local_params
 
     def is_distributed_norm(self, mode: Mode):
+        is_galaxy_8_device_row_submesh = (
+            self.mesh_device is not None
+            and self.num_devices == 8
+            and tuple(self.mesh_device.shape) == (1, 8)
+            and ttnn.cluster.get_cluster_type() == ttnn.cluster.ClusterType.GALAXY
+        )
+        if (
+            self.base_model_name == "Llama-3.1-8B"
+            and mode == Mode.PREFILL
+            and is_galaxy_8_device_row_submesh
+        ):
+            return True
         if not self.is_multichip:
             return False
         if all([dim > 1 for dim in list(self.mesh_device.shape)]):  # 2D grid
