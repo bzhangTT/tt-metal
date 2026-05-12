@@ -347,6 +347,8 @@ class TtMoe(LightweightModule):
         self,
         x: ttnn.Tensor,
         return_intermediates: bool = False,
+        number_of_non_padded_tokens: int = None,
+        padding_side: str = "right",
     ) -> tuple[ttnn.Tensor, Optional[TtMoEIntermediates]]:
         """
         Forward pass through the full MoE pipeline.
@@ -371,7 +373,9 @@ class TtMoe(LightweightModule):
         # Reshape 3D -> 2D for gate: (batch, seq, emb) -> (batch*seq, emb)
 
         scores, indices, gate_logits, tt_expert_offsets, tt_expert_token_counts, tt_expert_region_offsets = self.gate(
-            ttnn.view(x, (x.shape[0] * x.shape[1], x.shape[2]))
+            ttnn.view(x, (x.shape[0] * x.shape[1], x.shape[2])),
+            num_real_tokens=number_of_non_padded_tokens,
+            padding_side=padding_side,
         )
         gate_logits = (
             ttnn.to_memory_config(gate_logits, ttnn.DRAM_MEMORY_CONFIG)

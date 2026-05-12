@@ -427,8 +427,34 @@ class TtMoEGatePrefill(LightweightModule):
             epsilon=1e-20,
         )
 
-    def _device_grouped_gate_fp32(self, logits: ttnn.Tensor) -> tuple[ttnn.Tensor, ttnn.Tensor]:
-        """Run moe_grouped_topk on device with fp32 typecast."""
+    def _device_grouped_gate_fp32(
+        self,
+        logits: ttnn.Tensor,
+        num_real_tokens: int = None,
+        padding_side: str = "right",
+    ) -> tuple[ttnn.Tensor, ttnn.Tensor]:
+        """Run moe_grouped_topk on device with fp32 typecast.
+
+        When num_real_tokens is set and SP factor is 1, padded token rows
+        get sentinel expert indices (= n_routed_experts) so downstream
+        masked_bincount/dispatch/combine skip them.  SP > 1 is not yet
+        supported for the sentinel path; a warning is logged and padding
+        masking is disabled.
+        """
+        sp_factor = self.mesh_device.shape[0]
+        op_num_real_tokens = 0xFFFFFFFF  # UINT32_MAX → "no padding"
+        op_pad_side = 0
+
+        if num_real_tokens is not None:
+            if sp_factor > 1:
+                logger.warning(
+                    "[MoeGate] SP factor > 1 with padding is not yet supported for sentinel routing. "
+                    "Padded tokens will not be masked in moe_grouped_topk."
+                )
+            else:
+                op_num_real_tokens = num_real_tokens
+                op_pad_side = 0 if padding_side == "right" else 1
+
         logits_f32 = ttnn.typecast(logits, ttnn.float32)
         bias_f32 = ttnn.typecast(self.bias, ttnn.float32)
         ttnn_scores, ttnn_top_k_experts_indices = ttnn.experimental.deepseek_prefill.moe_grouped_topk(
@@ -441,6 +467,8 @@ class TtMoEGatePrefill(LightweightModule):
             route_scale=self.config.route_scale,
             stable_sort=True,
             epsilon=1e-20,
+            num_real_tokens=op_num_real_tokens,
+            pad_side=op_pad_side,
         )
         ttnn.deallocate(logits_f32)
         ttnn.deallocate(bias_f32)
@@ -463,7 +491,12 @@ class TtMoEGatePrefill(LightweightModule):
     # Forward
     # ------------------------------------------------------------------
 
-    def forward(self, x: ttnn.Tensor) -> tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]:
+    def forward(
+        self,
+        x: ttnn.Tensor,
+        num_real_tokens: int = None,
+        padding_side: str = "right",
+    ) -> tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]:
         mode = self.fallback_mode
         logger.debug(f"[MoeGate] fallback_mode={mode.value}")
 
@@ -481,7 +514,11 @@ class TtMoEGatePrefill(LightweightModule):
             ttnn_scores, ttnn_top_k_experts_indices = self._device_grouped_gate(logits)
 
         elif mode == GateComputeMode.DEVICE_FP32:
-            ttnn_scores, ttnn_top_k_experts_indices = self._device_grouped_gate_fp32(logits)
+            ttnn_scores, ttnn_top_k_experts_indices = self._device_grouped_gate_fp32(
+                logits,
+                num_real_tokens=num_real_tokens,
+                padding_side=padding_side,
+            )
 
         elif mode == GateComputeMode.HOST_GROUPED_GATE:
             host_logits = self._compose_logits_to_host(logits)
