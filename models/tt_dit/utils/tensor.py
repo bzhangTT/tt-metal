@@ -162,6 +162,17 @@ def from_torch(
     )
 
 
+def from_torch_to_devices(
+    x: torch.Tensor,
+    *,
+    devices: Sequence[ttnn.MeshDevice],
+    mesh_axes: Sequence[int | None] | None = None,
+    on_host: bool = False,
+) -> list[ttnn.Tensor]:
+    """Replicate a torch tensor across submesh devices, returning one ttnn.Tensor per device."""
+    return [from_torch(x, device=d, mesh_axes=mesh_axes, on_host=on_host) for d in devices]
+
+
 def to_torch(
     x: ttnn.Tensor,
     /,

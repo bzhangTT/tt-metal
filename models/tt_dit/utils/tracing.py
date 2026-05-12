@@ -120,12 +120,12 @@ class Tracer:
     ) -> Any:
         """Capture or execute trace.
 
-        On the first call, runs the wrapped function to capture the trace. On subsequent calls,
-        executes the captured trace. On the first call, inputs initialize the trace inputs. On
-        subsequent calls, they update the trace inputs. Only ``ttnn.Tensor`` inputs can be changed.
-        Aside from omitting positional inputs to reuse previous values, a value of ``None`` can be
-        passed to reuse the previous value for tensor inputs as well. Host tensor inputs will
-        automatically be moved to the tracer device.
+        In traced mode, the first call captures the trace and subsequent calls execute it. The
+        first call's inputs initialize the stored input state; subsequent calls must pass the
+        same number of positional arguments and the same set of keyword argument names. Tensor
+        inputs are validated for shape/dtype/layout match; non-tensor inputs (scalars, ``None``)
+        must compare equal to the captured values. Host tensor inputs are automatically moved
+        to the tracer device.
 
         Args:
             traced: Whether to capture/execute the trace on this call. If ``False``, the wrapped
@@ -136,20 +136,26 @@ class Tracer:
                 on the first call. If ``False``, only the trace is captured and outputs are not
                 computed.
             *args: Positional inputs to pass to the wrapped function.
-            **kwargs: Named inputs to pass to the wrapped function. Optional on subsequent calls.
+            **kwargs: Named inputs to pass to the wrapped function.
 
         Returns:
             The outputs of the wrapped function.
 
         Raises:
-            TypeError: If outputs have unsupported types.
+            TypeError: If outputs have unsupported types, or if subsequent traced calls do not
+                match the captured arity/keyword set.
             Any exception raised by the wrapped function during first invocation.
         """
         if not traced:
             if self._function is None:
                 msg = "untraced execution is not possible after the captured function has been released"
                 raise RuntimeError(msg)
+            if self._trace_ids is not None:
+                msg = "untraced execution is not allowed after the trace has been captured"
+                raise RuntimeError(msg)
 
+            self._args = args
+            self._kwargs = kwargs
             return self._function(*args, **kwargs)
 
         if tracer_blocking_execution and len(self._devices) != 1:
@@ -236,25 +242,17 @@ class Tracer:
         trace_ids = self._trace_ids
         assert trace_ids is not None
 
-        if len(args) > len(self._args):
-            msg = f"expected at most {len(self._args)} positional args, got {len(args)}"
+        if len(args) != len(self._args):
+            msg = f"expected {len(self._args)} positional args, got {len(args)}"
             raise TypeError(msg)
 
-        # Pad with None to allow omitting trailing positional args.
-        args = args + (None,) * (len(self._args) - len(args))
+        if kwargs.keys() != self._kwargs.keys():
+            msg = f"expected kwargs {sorted(self._kwargs)}, got {sorted(kwargs)}"
+            raise TypeError(msg)
+
         _tree_map(self._update_input, self._args, args, path_label="args")
-
-        # kwargs can be omitted entirely to reuse all previous values, but individual
-        # entries must be explicitly set to None to preserve them (unlike positional args,
-        # _tree_map requires dicts to have matching keys).
         for name, new in kwargs.items():
-            if name not in self._kwargs:
-                msg = f"input '{name}' was not in the initial inputs"
-                raise KeyError(msg)
-
-            # None means reuse the previous value entirely.
-            if new is not None:
-                _tree_map(self._update_input, self._kwargs[name], new, path_label=f'kwargs["{name}"]')
+            _tree_map(self._update_input, self._kwargs[name], new, path_label=f'kwargs["{name}"]')
 
         for d, trace_id in zip(self._devices, trace_ids, strict=True):
             ttnn.execute_trace(d, trace_id, cq_id=cq_id, blocking=blocking)
@@ -263,6 +261,18 @@ class Tracer:
     def trace_captured(self) -> bool:
         """Whether a trace has been captured and is ready for execution."""
         return self._trace_ids is not None
+
+    @property
+    def inputs(self) -> dict[int | str, Any]:
+        """Stored inputs from the most recent call (empty before the first call).
+
+        Keyed by parameter name (``str``) for keyword inputs, or by index (``int``) for positional
+        inputs. After the trace has been captured, tensor entries are the trace's input buffers, so
+        the reference is a safe handle to the latest value of that input, which is useful when the
+        caller needs to consume an input after trace execution. In untraced mode, tensor entries are
+        simply the most recently passed references.
+        """
+        return {**dict(enumerate(self._args)), **self._kwargs}
 
     def release_trace(self) -> None:
         """Release the captured trace and clear inputs and outputs."""
@@ -302,7 +312,7 @@ class Tracer:
             if len(self._devices) != 1:
                 msg = (
                     f"input '{path_label}' is a host tensor; host tensors are not supported "
-                    "when the tracer manages multiple devices"
+                    "during capture when the tracer manages multiple devices"
                 )
                 raise ValueError(msg)
             return value.to(self._devices[0])
@@ -314,9 +324,7 @@ class Tracer:
         raise ValueError(msg)
 
     def _update_input(self, prev: Any, new: Any, *, path_label: str) -> None:
-        if new is None and isinstance(prev, ttnn.Tensor):
-            return
-
+        """Copy ``new`` into the slot ``prev`` in place."""
         if type(new) is not type(prev):
             msg = f"input '{path_label}' type {type(new)} does not match the initial type {type(prev)}"
             raise TypeError(msg)
