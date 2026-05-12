@@ -29,9 +29,14 @@ void kernel_main() {
 #endif
 
     // Emit tiles in N, W_skip, H, W_chunk order to match the chunked iteration of the
-    // unified reduce compute kernel (row_chunk = DEST_AUTO_LIMIT). For shard_Wt=1 this
-    // degenerates to one column per chunk; for shard_Wt>1 it interleaves columns.
+    // unified reduce compute kernel. FPU uses row_chunk = DEST_AUTO_LIMIT (folds in place).
+    // SFPU min/max (signalled by REDUCE_FORMAT) reserves one DST for the binary fold work
+    // tile, so it uses DEST_AUTO_LIMIT - 1.
+#ifdef REDUCE_FORMAT
+    constexpr uint32_t row_chunk = compute_kernel_lib::DEST_AUTO_LIMIT - 1;
+#else
     constexpr uint32_t row_chunk = compute_kernel_lib::DEST_AUTO_LIMIT;
+#endif
 
     constexpr uint32_t onetile = 1;
     uint32_t tile_bytes = get_tile_size(cb_id_in0);
