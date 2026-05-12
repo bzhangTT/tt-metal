@@ -94,9 +94,29 @@ PreAllGatherWelfordProgramFactory::cached_program_t PreAllGatherWelfordProgramFa
     const auto* compute_kernel_file =
         "ttnn/cpp/ttnn/operations/experimental/transformer/dit_layernorm_pre_all_gather/device/kernels/compute/"
         "layernorm_pre_allgather_welford.cpp";
+
+    // Float32 input requires fp32 dest accumulation; otherwise the unpacker would silently
+    // downcast through SrcA to TF32 / Float16_b (~10 mantissa bits).
+    TT_FATAL(
+        !(in_data_format == tt::DataFormat::Float32 && !fp32_dest_acc_en),
+        "dit_layernorm_pre_all_gather with Float32 input requires fp32_dest_acc_en=true in the "
+        "compute kernel config; otherwise precision is silently lost in the unpacker format "
+        "conversion.");
+
+    // For Float32 input with fp32_dest_acc_en, force unpack-to-dest in fp32 mode so the
+    // unpacker writes full fp32 to DEST instead of routing through SrcA which would downcast
+    // to TF32 (10 mantissa bits). Without this the Welford recurrence sees TF32-truncated inputs
+    // and catastrophically loses precision when |mean| >> std.
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    if (fp32_dest_acc_en && in_data_format == tt::DataFormat::Float32) {
+        unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_0)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    }
+
     auto compute_config = tt::tt_metal::ComputeConfig{
         .math_fidelity = math_fidelity,
         .fp32_dest_acc_en = fp32_dest_acc_en,
+        .unpack_to_dest_mode = unpack_to_dest_mode,
         .math_approx_mode = math_approx_mode,
         .compile_args = compute_args,
         .defines = compute_defines};
