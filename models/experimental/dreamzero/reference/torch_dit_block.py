@@ -62,10 +62,18 @@ class RotaryPositionEmbedding3D(nn.Module):
         return freqs_cis
 
     def _precompute_freqs_3d(self, dim: int, end: int = 1024, theta: float = 10000.0):
-        """Precompute 3D frequency components for frame/height/width."""
-        f_freqs = self._precompute_freqs_1d(dim - 2 * (dim // 3), end, theta)
-        h_freqs = self._precompute_freqs_1d(dim // 3, end, theta)
-        w_freqs = self._precompute_freqs_1d(dim // 3, end, theta)
+        """
+        Precompute 3D frequency components for frame/height/width.
+
+        Splits head_dim into 3 parts: frame gets (dim - 2*(dim//3)),
+        height and width each get (dim//3). Frame gets the remainder
+        to handle non-divisible dimensions.
+        """
+        f_dim = dim - 2 * (dim // 3)  # Frame dimension (gets remainder)
+        hw_dim = dim // 3  # Height/width dimension
+        f_freqs = self._precompute_freqs_1d(f_dim, end, theta)
+        h_freqs = self._precompute_freqs_1d(hw_dim, end, theta)
+        w_freqs = self._precompute_freqs_1d(hw_dim, end, theta)
         return {"f": f_freqs, "h": h_freqs, "w": w_freqs}
 
     def forward(self, f: int, h: int, w: int) -> torch.Tensor:

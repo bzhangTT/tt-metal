@@ -185,10 +185,11 @@ class WanDiTModel(nn.Module):
         # Compute RoPE frequencies (for video tokens + action token positions)
         freqs = self.rope(f=f, h=h, w=w)
 
-        # Extend RoPE for action tokens (use last position index)
+        # Extend RoPE for action tokens
         if action_tokens is not None:
             num_action_tokens = action_tokens.shape[1]
-            # Action tokens get zero-frequency (no spatial position)
+            # Action tokens use identity rotation (ones in complex space = no positional encoding)
+            # This means action tokens have no spatial position bias
             action_freqs = torch.ones(
                 num_action_tokens, 1, freqs.shape[-1],
                 dtype=freqs.dtype, device=freqs.device
