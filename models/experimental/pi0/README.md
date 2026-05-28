@@ -300,7 +300,7 @@ sample_images/
 **Run Demos:**
 
 ```bash
-# ALOHA simulation demo
+# ALOHA simulation demo (open-loop, compares PyTorch vs TTNN)
 python models/experimental/pi0/tests/demo/run_aloha_sim_demo.py
 
 # LIBERO demo
@@ -309,6 +309,58 @@ python models/experimental/pi0/tests/demo/run_libero_demo.py
 # Visualize results
 python models/experimental/pi0/tests/demo/visualize_demo.py
 ```
+
+## Closed-Loop Robotics Simulation
+
+Run PI0 in a **closed-loop** MuJoCo simulation where the model actually controls a
+simulated ALOHA robot, observing camera feeds and executing predicted actions.
+
+### Setup
+
+```bash
+# Install simulation dependencies
+pip install -r models/experimental/pi0/tests/demo/requirements_sim.txt
+```
+
+### Running
+
+```bash
+# Run with TT hardware (TTNN backend)
+python models/experimental/pi0/tests/demo/run_aloha_sim_closed_loop.py
+
+# Run with PyTorch reference only (no TT hardware needed)
+python models/experimental/pi0/tests/demo/run_aloha_sim_closed_loop.py --backend torch
+
+# Record video of the robot executing actions
+python models/experimental/pi0/tests/demo/run_aloha_sim_closed_loop.py --record-video
+
+# Run multiple evaluation episodes
+python models/experimental/pi0/tests/demo/run_aloha_sim_closed_loop.py --num-episodes 5
+
+# Different task environment
+python models/experimental/pi0/tests/demo/run_aloha_sim_closed_loop.py \
+    --env-id gym_aloha/AlohaInsertionPeg-v0 --task "Insert peg"
+```
+
+### What This Does
+
+1. Initializes the MuJoCo ALOHA simulation environment
+2. Loads the PI0 model (TTNN on TT hardware, or PyTorch on CPU)
+3. Runs a closed-loop episode:
+   - Captures camera images from the simulated robot
+   - Feeds images + language instruction to PI0
+   - PI0 predicts a 50-step action chunk via flow-matching denoising
+   - Actions are executed step-by-step in the simulator
+   - Repeat until task success or timeout
+4. Reports success rate, reward, and inference speed
+
+### Available Environments
+
+| Environment | Task |
+|-------------|------|
+| `gym_aloha/AlohaTransferCube-v0` | Transfer a cube between arms |
+| `gym_aloha/AlohaInsertionPeg-v0` | Insert a peg into a socket |
+| `gym_aloha/AlohaInsertionSocket-v0` | Socket insertion task |
 
 ## Troubleshooting
 

@@ -1,0 +1,15 @@
+# Requirements for PI0 closed-loop robotics simulation
+# Install with: pip install -r requirements_sim.txt
+
+# Core simulation
+gymnasium>=0.29.0
+gym-aloha>=0.1.0
+mujoco>=3.0.0
+
+# Video recording
+imageio[ffmpeg]>=2.31.0
+
+# Already required by tt-metal but listed for completeness
+numpy>=1.24.0
+torch>=2.0.0
+Pillow>=9.0.0
