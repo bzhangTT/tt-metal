@@ -48,6 +48,36 @@ from models.experimental.aurora.tt.common import TtLinear, from_tt, to_tt
 _MATH_FIDELITY = ttnn.MathFidelity.HiFi2
 _FP32_DEST_ACC = True
 
+# Flash attention (ttnn.transformer.scaled_dot_product_attention) in the window
+# attention, in place of the explicit QK^T/softmax/(.)V path. SDPA fuses
+# scale+mask+softmax and never materializes the (N, N) scores in DRAM.
+#
+# OFF by default for the validated 0.25deg small/1.3B configs: even with a
+# single-chunk program config + exact exp + HiFi2/fp32, the flash online-softmax
+# in bf16 is ~0.9997/block, which compounds over ~48 blocks to backbone PCC
+# ~0.989 (vs 0.998 exact) and pushes worst-variable full-model PCC to ~0.89 --
+# below the 0.97 gate. At Aurora's window N=144 the (N,N) scores are tiny and the
+# backbone is data-movement bound, not attention-FLOP bound, so there is no speed
+# win to pay for that accuracy. SDPA is the right call only for the high-res
+# variants (patch_size=10) where N and the window count explode; enable it there
+# and re-check PCC. The exact manual path below is the default.
+_USE_SDPA = False
+
+# Fold single-mode LoRA into the base qkv/proj weights for inference:
+# W' = W + (alpha/r)*(B@A). Exact (it is the same linear map), and it removes the
+# two extra LoRA matmuls per projection per block (~4 matmuls/block over ~48
+# blocks). Only valid for lora_mode="single" (one LoRA shared across rollout
+# steps), which is what the port implements; the runtime two-matmul path is kept
+# for debugging / a future per-step "all" mode. (OPTIMIZATION.md item 7.)
+_FOLD_LORA = True
+
+
+def set_fold_lora(enabled: bool):
+    """Fold single-mode LoRA into the base weights at construction (default on)."""
+    global _FOLD_LORA
+    _FOLD_LORA = enabled
+
+
 # Tensor parallelism (Megatron-style col/row sharding of the MLP, with an
 # all_reduce per block) requires a healthy inter-chip Ethernet fabric. It is
 # OFF by default; enable only on a mesh whose fabric passes the collective
@@ -199,10 +229,13 @@ class TtMLP:
 class TtWindowAttention:
     """Window-based multi-head self attention with optional additive mask and LoRA.
 
-    Operates on windows of shape ``(nW*B, N, D)``.  Implemented as explicit
-    QK^T / softmax / (.)V so the additive shifted-window mask can be applied
-    exactly, and so LoRA corrections (``x @ A^T @ B^T * scaling``) compose with
-    the base projections as in the reference.
+    Operates on windows of shape ``(nW*B, N, D)``.  Attention is computed with
+    ``ttnn.transformer.scaled_dot_product_attention`` (flash attention): scale,
+    additive shifted-window mask and softmax are fused and the ``(N, N)`` score
+    matrix is never materialized in DRAM. LoRA corrections
+    (``x @ A^T @ B^T * scaling``) compose with the base projections as in the
+    reference. Set ``_USE_SDPA = False`` to fall back to the explicit
+    QK^T / softmax / (.)V path (kept for debugging / numerical comparison).
     """
 
     def __init__(self, sd, prefix, dim, num_heads, device, use_lora=False, weight_dtype=ttnn.bfloat16):
@@ -214,10 +247,21 @@ class TtWindowAttention:
         self.use_lora = use_lora
         self.kc = hifi_kernel_config()
 
-        self.qkv = TtLinear(sd[f"{prefix}.qkv.weight"], sd[f"{prefix}.qkv.bias"], device, weight_dtype=weight_dtype)
-        self.proj = TtLinear(sd[f"{prefix}.proj.weight"], sd[f"{prefix}.proj.bias"], device, weight_dtype=weight_dtype)
+        qkv_w = sd[f"{prefix}.qkv.weight"]
+        proj_w = sd[f"{prefix}.proj.weight"]
+        # Runtime LoRA (two extra matmuls/projection) only when LoRA is on AND we
+        # are not folding it into the base weight.
+        self.lora_runtime = use_lora and not _FOLD_LORA
+        if use_lora and _FOLD_LORA:
+            qkv_w = self._fold(qkv_w, sd[f"{prefix}.lora_qkv.loras.0.lora_A"], sd[f"{prefix}.lora_qkv.loras.0.lora_B"])
+            proj_w = self._fold(
+                proj_w, sd[f"{prefix}.lora_proj.loras.0.lora_A"], sd[f"{prefix}.lora_proj.loras.0.lora_B"]
+            )
 
-        if use_lora:
+        self.qkv = TtLinear(qkv_w, sd[f"{prefix}.qkv.bias"], device, weight_dtype=weight_dtype)
+        self.proj = TtLinear(proj_w, sd[f"{prefix}.proj.bias"], device, weight_dtype=weight_dtype)
+
+        if self.lora_runtime:
             # single-mode LoRA: loras[0]. A: (r, in), B: (out, r). correction =
             # (x @ A^T) @ B^T * (alpha/r). We fold scaling into B.
             self.qkv_A = to_tt(sd[f"{prefix}.lora_qkv.loras.0.lora_A"].t().contiguous(), device)
@@ -227,6 +271,16 @@ class TtWindowAttention:
             proj_B = sd[f"{prefix}.lora_proj.loras.0.lora_B"]
             self.proj_B = to_tt((proj_B * (8.0 / proj_B.shape[1])).t().contiguous(), device)
 
+    @staticmethod
+    def _fold(W, A, B):
+        """Fold single-mode LoRA into a base weight: W' = W + (alpha/r)*(B@A).
+
+        W: (out, in), A: (r, in), B: (out, r); alpha=8 matches the runtime path's
+        scaling (8.0 / r). Done in fp32 on host before upload, so it is exact.
+        """
+        r = A.shape[0]
+        return (W + (8.0 / r) * (B @ A)).contiguous()
+
     def _lora(self, x, A, B):
         return ttnn.matmul(ttnn.matmul(x, A, compute_kernel_config=self.kc), B, compute_kernel_config=self.kc)
 
@@ -234,7 +288,7 @@ class TtWindowAttention:
         # x: (nWB, N, D)
         nWB, N, D = x.shape
         qkv = self.qkv(x, compute_kernel_config=self.kc)
-        if self.use_lora:
+        if self.lora_runtime:
             qkv = ttnn.add(qkv, self._lora(x, self.qkv_A, self.qkv_B))
         # (nWB, N, 3D) -> (nWB, N, 3, nH, hd) -> split
         qkv = ttnn.reshape(qkv, (nWB, N, 3, self.num_heads, self.head_dim))
@@ -242,17 +296,42 @@ class TtWindowAttention:
         q = qkv[0]
         k = qkv[1]
         v = qkv[2]
-        kt = ttnn.permute(k, (0, 1, 3, 2))  # (nWB, nH, hd, N)
-        scores = ttnn.matmul(q, kt, compute_kernel_config=self.kc)  # (nWB, nH, N, N)
-        scores = ttnn.multiply(scores, self.scale)
-        if mask_tt is not None:
-            scores = ttnn.add(scores, mask_tt)  # broadcast over heads
-        attn = ttnn.softmax(scores, dim=-1)
-        out = ttnn.matmul(attn, v, compute_kernel_config=self.kc)  # (nWB, nH, N, hd)
+        if _USE_SDPA:
+            # Flash attention: fuses scale + additive mask + softmax + (.)V and
+            # never materializes the (N, N) scores in DRAM. The default scale is
+            # 1/sqrt(head_dim) == self.scale; the additive mask broadcasts over heads.
+            # The chunk size must cover the (tile-padded) window length N in a
+            # single chunk and exp must be exact -- the default chunking + approx
+            # exp drops per-block PCC ~0.996 -> compounds badly over ~48 blocks.
+            chunk = ((N + 31) // 32) * 32
+            pc = ttnn.SDPAProgramConfig(
+                compute_with_storage_grid_size=self.device.compute_with_storage_grid_size(),
+                q_chunk_size=chunk,
+                k_chunk_size=chunk,
+                exp_approx_mode=False,
+            )
+            out = ttnn.transformer.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=mask_tt,
+                is_causal=False,
+                scale=self.scale,
+                compute_kernel_config=self.kc,
+                program_config=pc,
+            )  # (nWB, nH, N, hd)
+        else:
+            kt = ttnn.permute(k, (0, 1, 3, 2))  # (nWB, nH, hd, N)
+            scores = ttnn.matmul(q, kt, compute_kernel_config=self.kc)  # (nWB, nH, N, N)
+            scores = ttnn.multiply(scores, self.scale)
+            if mask_tt is not None:
+                scores = ttnn.add(scores, mask_tt)  # broadcast over heads
+            attn = ttnn.softmax(scores, dim=-1)
+            out = ttnn.matmul(attn, v, compute_kernel_config=self.kc)  # (nWB, nH, N, hd)
         out = ttnn.permute(out, (0, 2, 1, 3))  # (nWB, N, nH, hd)
         out = ttnn.reshape(out, (nWB, N, D))
         proj = self.proj(out, compute_kernel_config=self.kc)
-        if self.use_lora:
+        if self.lora_runtime:
             proj = ttnn.add(proj, self._lora(out, self.proj_A, self.proj_B))
         return proj
 

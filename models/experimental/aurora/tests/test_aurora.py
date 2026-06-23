@@ -142,6 +142,63 @@ def test_backbone_pcc_random(device):
     assert p > 0.999, f"random-weight backbone PCC too low: {p}"
 
 
+def test_lora_fold_matches_unfolded(device):
+    """LoRA folding (W' = W + (alpha/r)*B@A) matches both the reference and the
+    unfolded runtime LoRA path on a random LoRA-enabled backbone.
+
+    The real small/1.3B checkpoints used elsewhere are exercised without LoRA or
+    with it always folded; this isolates the fold itself. ``lora_B`` is zero-init
+    in the reference (LoRA starts as identity), so we randomise it to make the
+    correction non-trivial, then check (a) folded TT vs reference torch backbone
+    and (b) folded TT vs the explicit two-matmul TT path agree to ~1.0.
+    """
+    from models.experimental.aurora.tt.swin import set_fold_lora
+
+    torch.manual_seed(0)
+    ref_bb = Swin3DTransformerBackbone(embed_dim=96, window_size=(2, 6, 12), use_lora=True).eval()
+    with torch.no_grad():
+        for name, prm in ref_bb.named_parameters():
+            if "lora_B" in name:  # zero-init by default -> randomise for a real test
+                prm.normal_(0.0, 0.02)
+    sd = {f"bb.{k}": v.detach().cpu().float() for k, v in ref_bb.state_dict().items()}
+
+    patch_res = (4, 8, 16)
+    D = ref_bb.embed_dim
+    x = torch.randn(1, patch_res[0] * patch_res[1] * patch_res[2], D)
+    lead = timedelta(hours=6)
+    with torch.no_grad():
+        ref_out = ref_bb(x, lead_time=lead, rollout_step=0, patch_res=patch_res)
+
+    def build():
+        return TtSwin3DTransformerBackbone(
+            sd,
+            prefix="bb",
+            embed_dim=D,
+            encoder_depths=tuple(len(l.blocks) for l in ref_bb.encoder_layers),
+            encoder_num_heads=tuple(l.blocks[0].num_heads for l in ref_bb.encoder_layers),
+            decoder_depths=tuple(len(l.blocks) for l in ref_bb.decoder_layers),
+            decoder_num_heads=tuple(l.blocks[0].num_heads for l in ref_bb.decoder_layers),
+            window_size=ref_bb.window_size,
+            device=device,
+            use_lora=True,
+        )
+
+    try:
+        set_fold_lora(True)
+        folded = build()(x, lead, patch_res)
+        set_fold_lora(False)
+        unfolded = build()(x, lead, patch_res)
+    finally:
+        set_fold_lora(True)  # restore default
+
+    p_fold = pcc(ref_out, folded)
+    p_unfold = pcc(ref_out, unfolded)
+    p_equiv = pcc(folded, unfolded)
+    print(f"\n[lora fold] folded-vs-ref={p_fold:.5f} unfolded-vs-ref={p_unfold:.5f} folded-vs-unfolded={p_equiv:.5f}")
+    assert p_fold > 0.999, f"folded LoRA backbone PCC too low: {p_fold}"
+    assert p_equiv > 0.999, f"folded vs unfolded LoRA mismatch: {p_equiv}"
+
+
 def test_mask_cache_reused_across_rollout(device, ref_model):
     """Device shifted-window masks are uploaded once and reused on later steps.
 

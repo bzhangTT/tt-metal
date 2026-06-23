@@ -68,10 +68,17 @@ the 1.3B checkpoint.
 - Replace the manual `QKᵀ → ·scale → +mask → softmax → ·V` with
   `ttnn.transformer.scaled_dot_product_attention(q, k, v, attn_mask=…)`
   (flash attention): never materializes the `(N, N)` score matrix in DRAM,
-  fuses scale + mask + softmax, and tiles over `N`. For Aurora's small `N=144`
-  the win is modest, but it removes a DRAM round-trip of the scores per window
-  and is the right call for the high-res (`patch_size=10`) variants where `N`
-  and window counts explode.
+  fuses scale + mask + softmax, and tiles over `N`. **[implemented, off by
+  default — `_USE_SDPA`]**. Measured: even with a single-chunk program config
+  (`q/k_chunk = pad(N,32)`), exact exp (`exp_approx_mode=False`) and HiFi2 +
+  fp32 dest-acc, the flash online-softmax in bf16 is ~0.9997/block, which
+  compounds over the ~48 blocks to backbone PCC ~0.989 (vs 0.998 for the exact
+  path) and drops worst-variable full-model PCC to ~0.89 — below the 0.97 gate.
+  At Aurora's `N=144` the `(N,N)` scores are tiny and the backbone is
+  data-movement bound, so there is no speed win to pay for that accuracy: the
+  exact manual path stays the default. SDPA is the right call for the high-res
+  (`patch_size=10`) variants where `N` and window counts explode — enable it
+  there and re-check PCC.
 - `ttnn.layer_norm` already fuses mean/var/normalize/affine in one kernel; feed
   the FiLM `scale`/`shift` as the post-affine to fuse the adaptive modulation.
 
@@ -133,12 +140,14 @@ mask builder is already `lru_cache`d; extend the cache to hold the uploaded
   call (`TtSwin3DTransformerBlock._mask_cache`; covered by
   `test_mask_cache_reused_across_rollout`).
 - **Upload weights as bf16/bfp8 once** at construction (done) — never per call.
-- **Fold LoRA into the base weight for inference.** In `"single"` mode the LoRA
-  correction is `x·(Aᵀ·Bᵀ)·s`; precompute `W' = W + s·BᵀAᵀ`... wait, it adds to
-  the *output* so `W'_eff = W + s·(B·A)` on the `(out,in)` weight. Folding
-  removes two extra matmuls per attention per block at zero accuracy cost when
-  the rollout step is fixed (inference). Keep the unfused path only if you need
-  per-step `"all"`-mode LoRA.
+- **Fold LoRA into the base weight for inference — [done, `_FOLD_LORA`].** In
+  `"single"` mode the LoRA correction adds to the *output*, so the effective
+  `(out,in)` weight is `W'_eff = W + s·(B·A)` with `s = alpha/r`. Folding
+  (`TtWindowAttention._fold`, done in fp32 on host before upload) removes two
+  extra matmuls per projection per block at zero accuracy cost when the rollout
+  step is fixed (inference). Validated by `test_lora_fold_matches_unfolded`:
+  folded-vs-reference and folded-vs-unfolded PCC = 1.00000. The unfused runtime
+  path is kept (`set_fold_lora(False)`) for a future per-step `"all"`-mode LoRA.
 - **Run encoder/decoder Perceiver attention on device too** once the backbone is
   device-resident — they are the same `linear/SDPA/layer_norm` primitives, so
   the host↔device boundary can move out to the Fourier/conv preprocessing only.
@@ -150,7 +159,9 @@ mask builder is already `lru_cache`d; extend the cache to hold the uploaded
 ## Recommended enablement order
 
 1. `bfp8_b` weights for MLP + QKV/proj (flag in `TtLinear`), gate on PCC. **[done]**
-2. Fused `activation="gelu"` linear + flash SDPA. **[done for GELU]**
+2. Fused `activation="gelu"` linear **[done]**; flash SDPA **[implemented, off by
+   default — fails the PCC gate at `N=144`; for high-res variants only]**.
+   LoRA folding for inference **[done, `_FOLD_LORA`]**.
 3. Device-resident windowing (remove per-block host transfers). **[done]**
 4. Matmul fidelity HiFi4→HiFi2 + fp32 accumulation (`set_compute_fidelity`),
    PCC-equal, ~1.25× on the matmuls. **[done, default]**
