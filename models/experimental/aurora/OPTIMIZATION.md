@@ -18,12 +18,19 @@ Aurora shapes that drive every decision (small / 1.3B):
 
 ---
 
-## 1. Keep the block device-resident; do windowing with TT-NN ops
+## 1. Keep the block device-resident; do windowing with TT-NN ops — **[done]**
 
-**Today** every Swin block round-trips to host for `window_partition_3d`,
-`torch.roll`, `pad`, `window_reverse_3d`. That is two PCIe copies of a
+**Before** every Swin block round-tripped to host for `window_partition_3d`,
+`torch.roll`, `pad`, `window_reverse_3d`. That was two PCIe copies of a
 `(B, C·H·W, D)` activation *per block* × ~48 blocks × every rollout step — the
 dominant non-compute cost.
+
+These are now done on device (`tt_window_partition_3d` / `tt_window_reverse_3d`
+/ `tt_pad_3d` / `tt_crop_3d` in `swin.py`): the activation is uploaded once at
+the start of the backbone and downloaded once at the end instead of ~5
+round-trips per block. The block `__call__` now takes and returns a device
+tensor. Measured **3.2–4.6× backbone speedup** with all PCC tests still passing
+(full-model worst-variable PCC 0.979).
 
 All of those are pure layout ops with direct TT-NN equivalents:
 - cyclic shift → `ttnn.roll` (exists; verified present on this build).
@@ -144,10 +151,14 @@ mask builder is already `lru_cache`d; extend the cache to hold the uploaded
 
 1. `bfp8_b` weights for MLP + QKV/proj (flag in `TtLinear`), gate on PCC. **[done]**
 2. Fused `activation="gelu"` linear + flash SDPA. **[done for GELU]**
-3. Device-resident windowing (remove per-block host transfers).
-4. Trace + 2-CQ backbone runner for rollout/serving.
-5. Mesh sharding: window/data-parallel first, then tensor-parallel for 1.3B.
-6. L1 sharding + tuned matmul program configs on the deepest stages.
+3. Device-resident windowing (remove per-block host transfers). **[done]**
+4. Matmul fidelity HiFi4→HiFi2 + fp32 accumulation (`set_compute_fidelity`),
+   PCC-equal, ~1.25× on the matmuls. **[done, default]**
+5. Trace + 2-CQ backbone runner for rollout/serving.
+6. Mesh sharding: window/data-parallel first, then tensor-parallel for 1.3B
+   (Megatron col/row MLP sharding scaffolded in `TtLinear(tp=…)` /
+   `set_tensor_parallel`, **off by default** — needs a working inter-chip fabric).
+7. L1 sharding + tuned matmul program configs on the deepest stages.
 
 Validation is the same `pcc` test at every step: enable an optimization, re-run
 `tests/test_aurora.py`, keep it only if worst-variable PCC stays above the

@@ -79,11 +79,15 @@ Reproduced on this hardware with a freshly built `tt-metal` (`build_metal.sh` +
 |------|--------|
 | Swin3D backbone vs reference, random weights (`test_backbone_pcc_random`) | PCC = 1.00000 |
 | Swin3D backbone vs reference, real weights (`test_backbone_pcc`) | PCC = 0.99846 |
-| Full model, worst-of-9-variables forecast, bf16 (`test_full_model_pcc`) | PCC = 0.98430 |
-| Full model, worst-of-9-variables forecast, **bfp8_b** (`test_full_model_pcc_bfp8`) | PCC = 0.98143 |
+| Full model, worst-of-9-variables forecast, bf16 (`test_full_model_pcc`) | PCC = 0.97892 |
+| Full model, worst-of-9-variables forecast, **bfp8_b** (`test_full_model_pcc_bfp8`) | PCC = 0.97945 |
 
-Per-variable (bf16): `z` 0.99999, `t` 0.99980, `10v` 0.99836, `10u` 0.99709,
-`q` 0.99436, `u` 0.98964, `v` 0.98532, `msl` 0.98497, `2t` 0.98430.
+Per-variable (bf16): `z` 0.99999, `t` 0.99976, `10v` 0.99831, `10u` 0.99722,
+`q` 0.99477, `u` 0.98673, `msl` 0.98682, `2t` 0.98392, `v` 0.97892.
+
+(The full-model numbers are with the default HiFi2 + fp32-accumulation matmul
+fidelity and device-resident windowing; HiFi4 gives ~0.984 worst-variable at
+~1.25× the matmul cost — flip back with `set_compute_fidelity` if you need it.)
 
 The same config-driven code runs the full 1.3B checkpoint (`embed_dim=512`,
 LoRA enabled) — set `use_lora=True` in `attach_tt_backbone`. Pass

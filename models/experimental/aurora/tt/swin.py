@@ -28,28 +28,113 @@ import ttnn
 from aurora.model.fourier import lead_time_expansion
 from aurora.model.swin3d import (
     compute_3d_shifted_window_mask,
-    crop_3d,
-    pad_3d,
-    window_partition_3d,
-    window_reverse_3d,
+    get_three_sidded_padding,
 )
 from aurora.model.util import maybe_adjust_windows
 
 from models.experimental.aurora.tt.common import TtLinear, from_tt, to_tt
 
 
-def hifi_kernel_config():
-    """High-fidelity matmul config: HiFi4 + fp32 accumulation in DST.
+# Matmul fidelity is tunable: HiFi4 (4 phases) is most accurate but ~2x slower
+# than HiFi2 and ~4x slower than LoFi. Weather residuals are small so we default
+# to the safe HiFi4 + fp32 accumulation, but the dynamic range of the real
+# checkpoint may tolerate HiFi2; gate any change on the PCC tests. Set via
+# ``set_compute_fidelity`` before building the backbone.
+# HiFi2 + fp32 accumulation measured to match HiFi4 worst-variable PCC (0.99992
+# vs 0.99991 at 0.5deg on the real 1.3B checkpoint) while running the matmuls
+# ~1.25x faster, so it is the default. bfp8/LoFi gave no speedup (the backbone is
+# data-movement bound, not compute bound) and LoFi cost accuracy, so they are not
+# defaults. See aurora_p1b.log.
+_MATH_FIDELITY = ttnn.MathFidelity.HiFi2
+_FP32_DEST_ACC = True
 
-    Aurora is numerically sensitive (weather residuals are small), so we trade a
-    little throughput for accuracy on the reduction-heavy matmuls.
+# Tensor parallelism (Megatron-style col/row sharding of the MLP, with an
+# all_reduce per block) requires a healthy inter-chip Ethernet fabric. It is
+# OFF by default; enable only on a mesh whose fabric passes the collective
+# handshake (see set_tensor_parallel). Validated correct on 1 chip (no-op);
+# blocked on the bh_rev_c_ bring-up partition where the fabric handshake times out.
+_TENSOR_PARALLEL = False
+
+
+def set_tensor_parallel(enabled: bool):
+    """Enable Megatron-style tensor parallelism for the MLP (needs working CCL)."""
+    global _TENSOR_PARALLEL
+    _TENSOR_PARALLEL = enabled
+
+
+def set_compute_fidelity(math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc=True):
+    """Override the global matmul fidelity/accumulation used by the backbone."""
+    global _MATH_FIDELITY, _FP32_DEST_ACC
+    _MATH_FIDELITY = math_fidelity
+    _FP32_DEST_ACC = fp32_dest_acc
+
+
+def hifi_kernel_config():
+    """Matmul compute-kernel config (fidelity + fp32 accumulation in DST).
+
+    Aurora is numerically sensitive (weather residuals are small), so the default
+    trades throughput for accuracy on the reduction-heavy matmuls; tune with
+    ``set_compute_fidelity`` and re-check PCC.
     """
     return ttnn.WormholeComputeKernelConfig(  # also valid on Blackhole
-        math_fidelity=ttnn.MathFidelity.HiFi4,
+        math_fidelity=_MATH_FIDELITY,
         math_approx_mode=False,
-        fp32_dest_acc_en=True,
+        fp32_dest_acc_en=_FP32_DEST_ACC,
         packer_l1_acc=True,
     )
+
+
+# --- On-device window glue ---------------------------------------------------
+# These replace the host torch.roll / window_partition_3d / window_reverse_3d /
+# pad / crop with ttnn equivalents so the whole backbone stays resident on the
+# device (one upload at the start of the backbone, one download at the end)
+# instead of round-tripping the activation to host ~5x per block. The reshape +
+# rank-8 permute pattern is identical indexing to the reference (validated to
+# PCC 1.0). All shape gymnastics run in ROW_MAJOR; matmul/norm ops run in TILE.
+
+
+def tt_window_partition_3d(xt, ws):
+    """(B, C, H, W, D) -> (nW*B, Wc*Wh*Ww, D), matching window_partition_3d."""
+    B, C, H, W, D = xt.shape
+    wc, wh, ww = ws
+    C1, H1, W1 = C // wc, H // wh, W // ww
+    xt = ttnn.reshape(xt, (B, C1, wc, H1, wh, W1, ww, D))
+    xt = ttnn.permute(xt, (0, 1, 3, 5, 2, 4, 6, 7))  # B C1 H1 W1 Wc Wh Ww D
+    return ttnn.reshape(xt, (B * C1 * H1 * W1, wc * wh * ww, D))
+
+
+def tt_window_reverse_3d(xt, ws, C, H, W, B=1):
+    """(nW*B, Wc*Wh*Ww, D) -> (B, C, H, W, D), matching window_reverse_3d."""
+    wc, wh, ww = ws
+    C1, H1, W1 = C // wc, H // wh, W // ww
+    D = xt.shape[-1]
+    xt = ttnn.reshape(xt, (B, C1, H1, W1, wc, wh, ww, D))
+    xt = ttnn.permute(xt, (0, 1, 4, 2, 5, 3, 6, 7))  # B C1 Wc H1 Wh W1 Ww D
+    return ttnn.reshape(xt, (B, C, H, W, D))
+
+
+def tt_pad_3d(xt, pad_size):
+    """Two-sided pad on (B, C, H, W, D); C padding is always 0 for Aurora so we
+    fold (B, C) into one dim and pad as rank-4 (rank-5 ttnn.pad is buggy)."""
+    Cp, Hp, Wp = pad_size
+    if Cp == 0 and Hp == 0 and Wp == 0:
+        return xt
+    assert Cp == 0, "device path assumes no level (C) padding"
+    B, C, H, W, D = xt.shape
+    pl, pr, pt, pb, _, _ = get_three_sidded_padding(Cp, Hp, Wp)
+    r4 = ttnn.reshape(xt, (B * C, H, W, D))
+    r4 = ttnn.pad(r4, padding=[(0, 0), (pt, pb), (pl, pr), (0, 0)], value=0.0)
+    return ttnn.reshape(r4, (B, C, H + pt + pb, W + pl + pr, D))
+
+
+def tt_crop_3d(xt, pad_size):
+    """Undo tt_pad_3d by slicing (inverse of pad)."""
+    Cp, Hp, Wp = pad_size
+    if Cp == 0 and Hp == 0 and Wp == 0:
+        return xt
+    B, C, H, W, D = xt.shape
+    pl, pr, pt, pb, pf, pbk = get_three_sidded_padding(Cp, Hp, Wp)
+    return ttnn.slice(xt, [0, pf, pt, pl, 0], [B, C - pbk, H - pb, W - pr, D])
 
 
 class TtAdaptiveLayerNorm:
@@ -87,10 +172,23 @@ class TtMLP:
     """fc1 -> GELU -> fc2, with the GELU fused into the fc1 matmul epilogue."""
 
     def __init__(self, sd, prefix, device, weight_dtype=ttnn.bfloat16):
+        # Tensor-parallel: fc1 column-parallel (shard the 4D hidden), fc2
+        # row-parallel (all_reduce). The hidden activation never leaves the mesh
+        # sharded, so only one all_reduce (in fc2) is paid per MLP. No-op on 1 chip.
+        # Gated by _TENSOR_PARALLEL because it needs the inter-chip Ethernet fabric
+        # (ttnn.all_reduce); leave off for single-chip or data-parallel meshes.
+        tp1, tp2 = ("col", "row") if _TENSOR_PARALLEL else (None, None)
         self.fc1 = TtLinear(
-            sd[f"{prefix}.fc1.weight"], sd[f"{prefix}.fc1.bias"], device, weight_dtype=weight_dtype, activation="gelu"
+            sd[f"{prefix}.fc1.weight"],
+            sd[f"{prefix}.fc1.bias"],
+            device,
+            weight_dtype=weight_dtype,
+            activation="gelu",
+            tp=tp1,
         )
-        self.fc2 = TtLinear(sd[f"{prefix}.fc2.weight"], sd[f"{prefix}.fc2.bias"], device, weight_dtype=weight_dtype)
+        self.fc2 = TtLinear(
+            sd[f"{prefix}.fc2.weight"], sd[f"{prefix}.fc2.bias"], device, weight_dtype=weight_dtype, tp=tp2
+        )
         self.kc = hifi_kernel_config()
 
     def __call__(self, x):
@@ -186,31 +284,39 @@ class TtSwin3DTransformerBlock:
         # one-time upload. (OPTIMIZATION.md item 7.)
         self._mask_cache: dict = {}
 
-    def __call__(self, x_torch, c_tt, res, warped=True):
-        """x_torch: (B, L, D) host tensor. c_tt: (B, D) SiLU-conditioning on device."""
+    def __call__(self, x_tt, c_tt, res, warped=True):
+        """x_tt: (B, L, D) device tensor (TILE). c_tt: (B, D) conditioning on device.
+
+        Fully device-resident: the window glue (shift/pad/partition/reverse/crop)
+        runs in ROW_MAJOR via ttnn, the attention/norm/MLP in TILE, with cheap
+        on-device layout conversions at the boundaries. No host round-trip.
+        """
         C, H, W = res
-        B, L, D = x_torch.shape
+        B, L, D = x_tt.shape
         ws, ss = maybe_adjust_windows(self.window_size, self.shift_size, res)
+        shifted_block = not all(s == 0 for s in ss)
 
-        shortcut = x_torch
-        x = x_torch.view(B, C, H, W, D)
+        shortcut = x_tt  # (B, L, D) TILE
 
-        if not all(s == 0 for s in ss):
-            shifted = torch.roll(x, shifts=(-ss[0], -ss[1], -ss[2]), dims=(1, 2, 3))
-            attn_mask, _ = compute_3d_shifted_window_mask(C, H, W, ws, ss, x.device, x.dtype, warped=warped)
+        # --- windowed attention path, in ROW_MAJOR ---
+        x = ttnn.to_layout(x_tt, ttnn.ROW_MAJOR_LAYOUT)
+        x = ttnn.reshape(x, (B, C, H, W, D))
+        if shifted_block:
+            x = ttnn.roll(x, [-ss[0], -ss[1], -ss[2]], [1, 2, 3])
+            attn_mask, _ = compute_3d_shifted_window_mask(
+                C, H, W, ws, ss, torch.device("cpu"), torch.float32, warped=warped
+            )
         else:
-            shifted = x
             attn_mask = None
 
         pad_size = ((-C) % ws[0], (-H) % ws[1], (-W) % ws[2])
-        shifted = pad_3d(shifted, pad_size)
-        x_windows = window_partition_3d(shifted, ws)
+        x = tt_pad_3d(x, pad_size)
+        _, pC, pH, pW, _ = x.shape
+        x_windows = tt_window_partition_3d(x, ws)  # (nWB, N, D) ROW_MAJOR
         N = ws[0] * ws[1] * ws[2]
-        x_windows = x_windows.reshape(-1, N, D)  # (nWB, N, D)
 
-        # Build broadcastable additive mask (nWB, 1, N, N) and upload once,
-        # reusing the device tensor across blocks/rollout steps with the same
-        # shift pattern (see _mask_cache).
+        # Broadcastable additive mask (nWB, 1, N, N), uploaded once and reused
+        # across blocks/rollout steps with the same shift pattern (see _mask_cache).
         mask_tt = None
         if attn_mask is not None:
             nW = attn_mask.shape[0]
@@ -222,26 +328,21 @@ class TtSwin3DTransformerBlock:
                 mask_tt = to_tt(m.float(), self.device)
                 self._mask_cache[cache_key] = mask_tt
 
-        xw_tt = to_tt(x_windows, self.device)
-        attn_tt = self.attn(xw_tt, mask_tt=mask_tt)
-        attn_windows = from_tt(attn_tt).reshape(-1, ws[0], ws[1], ws[2], D)
+        xw_tt = ttnn.to_layout(x_windows, ttnn.TILE_LAYOUT)
+        attn_tt = self.attn(xw_tt, mask_tt=mask_tt)  # (nWB, N, D) TILE
+        attn_windows = ttnn.to_layout(attn_tt, ttnn.ROW_MAJOR_LAYOUT)
 
-        _, pC, pH, pW, _ = shifted.shape
-        shifted = window_reverse_3d(attn_windows, ws, pC, pH, pW)
-        shifted = crop_3d(shifted, pad_size)
+        x = tt_window_reverse_3d(attn_windows, ws, pC, pH, pW, B)
+        x = tt_crop_3d(x, pad_size)
+        if shifted_block:
+            x = ttnn.roll(x, [ss[0], ss[1], ss[2]], [1, 2, 3])
+        x = ttnn.reshape(x, (B, C * H * W, D))
 
-        if not all(s == 0 for s in ss):
-            x = torch.roll(shifted, shifts=(ss[0], ss[1], ss[2]), dims=(1, 2, 3))
-        else:
-            x = shifted
-        x = x.reshape(B, C * H * W, D)
-
-        # Post-norm residuals, on device.
-        x_tt = to_tt(x, self.device)
-        sc_tt = to_tt(shortcut, self.device)
-        x_tt = ttnn.add(sc_tt, self.norm1(x_tt, c_tt))
+        # --- post-norm residuals, in TILE ---
+        x_tt = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
+        x_tt = ttnn.add(shortcut, self.norm1(x_tt, c_tt))
         x_tt = ttnn.add(x_tt, self.norm2(self.mlp(x_tt), c_tt))
-        return from_tt(x_tt)
+        return x_tt
 
 
 class TtPatchMerging3D:
@@ -255,19 +356,21 @@ class TtPatchMerging3D:
         self.reduction = TtLinear(sd[f"{prefix}.reduction.weight"], None, device)
         self.kc = hifi_kernel_config()
 
-    def __call__(self, x_torch, res):
+    def __call__(self, x_tt, res):
+        """x_tt: (B, L, D) device tensor (TILE). Returns (B, L/4, 2D) device TILE."""
         C, H, W = res
-        B, L, D = x_torch.shape
-        x = x_torch.view(B, C, H, W, D)
-        x = pad_3d(x, (0, H % 2, W % 2))
+        B, L, D = x_tt.shape
+        x = ttnn.to_layout(x_tt, ttnn.ROW_MAJOR_LAYOUT)
+        x = ttnn.reshape(x, (B, C, H, W, D))
+        x = tt_pad_3d(x, (0, H % 2, W % 2))
         nH, nW = x.shape[2], x.shape[3]
-        x = x.reshape(B, C, nH // 2, 2, nW // 2, 2, D)
+        x = ttnn.reshape(x, (B, C, nH // 2, 2, nW // 2, 2, D))
         # "B C H h W w D -> B (C H W) (h w D)"
-        x = x.permute(0, 1, 2, 4, 3, 5, 6).reshape(B, C * (nH // 2) * (nW // 2), 4 * D)
-        x_tt = to_tt(x, self.device)
+        x = ttnn.permute(x, (0, 1, 2, 4, 3, 5, 6))
+        x = ttnn.reshape(x, (B, C * (nH // 2) * (nW // 2), 4 * D))
+        x_tt = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
         x_tt = ttnn.layer_norm(x_tt, weight=self.norm_w, bias=self.norm_b, epsilon=1e-5)
-        x_tt = self.reduction(x_tt, compute_kernel_config=self.kc)
-        return from_tt(x_tt)
+        return self.reduction(x_tt, compute_kernel_config=self.kc)
 
 
 class TtPatchSplitting3D:
@@ -282,21 +385,23 @@ class TtPatchSplitting3D:
         self.norm_b = to_tt(sd[f"{prefix}.norm.bias"], device)
         self.kc = hifi_kernel_config()
 
-    def __call__(self, x_torch, res, crop=(0, 0, 0)):
+    def __call__(self, x_tt, res, crop=(0, 0, 0)):
+        """x_tt: (B, L, D) device tensor (TILE). Returns (B, ~4L, D/2) device TILE."""
         C, H, W = res
-        B, L, D = x_torch.shape
-        x_tt = self.lin1(to_tt(x_torch, self.device), compute_kernel_config=self.kc)  # (B, L, 2D)
-        x = from_tt(x_tt)
-        Dx = x.shape[-1]
-        x = x.view(B, C, H, W, 2, 2, Dx // 4)
+        B, L, D = x_tt.shape
+        x_tt = self.lin1(x_tt, compute_kernel_config=self.kc)  # (B, L, 2D) TILE
+        Dx = x_tt.shape[-1]
+        x = ttnn.to_layout(x_tt, ttnn.ROW_MAJOR_LAYOUT)
+        x = ttnn.reshape(x, (B, C, H, W, 2, 2, Dx // 4))
         # "B C H W h w D -> B C (H h) (W w) D"
-        x = x.permute(0, 1, 2, 4, 3, 5, 6).reshape(B, C, 2 * H, 2 * W, Dx // 4)
-        x = crop_3d(x, crop)
-        x = x.reshape(B, -1, Dx // 4)
-        x_tt = to_tt(x, self.device)
+        x = ttnn.permute(x, (0, 1, 2, 4, 3, 5, 6))
+        x = ttnn.reshape(x, (B, C, 2 * H, 2 * W, Dx // 4))
+        x = tt_crop_3d(x, crop)
+        _, Cc, Hc, Wc, Dc = x.shape
+        x = ttnn.reshape(x, (B, Cc * Hc * Wc, Dc))
+        x_tt = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
         x_tt = ttnn.layer_norm(x_tt, weight=self.norm_w, bias=self.norm_b, epsilon=1e-5)
-        x_tt = self.lin2(x_tt, compute_kernel_config=self.kc)
-        return from_tt(x_tt)
+        return self.lin2(x_tt, compute_kernel_config=self.kc)
 
 
 class TtBasicLayer3D:
@@ -336,14 +441,14 @@ class TtBasicLayer3D:
         self.downsample = TtPatchMerging3D(sd, f"{prefix}.downsample", dim, device) if downsample else None
         self.upsample = TtPatchSplitting3D(sd, f"{prefix}.upsample", dim, device) if upsample else None
 
-    def __call__(self, x_torch, c_tt, res, crop=(0, 0, 0)):
+    def __call__(self, x_tt, c_tt, res, crop=(0, 0, 0)):
         for blk in self.blocks:
-            x_torch = blk(x_torch, c_tt, res)
+            x_tt = blk(x_tt, c_tt, res)
         if self.downsample is not None:
-            return self.downsample(x_torch, res), x_torch
+            return self.downsample(x_tt, res), x_tt
         if self.upsample is not None:
-            return self.upsample(x_torch, res, crop), x_torch
-        return x_torch, None
+            return self.upsample(x_tt, res, crop), x_tt
+        return x_tt, None
 
 
 class TtSwin3DTransformerBackbone:
@@ -421,6 +526,9 @@ class TtSwin3DTransformerBackbone:
         return all_res, padded_outs
 
     def __call__(self, x_torch, lead_time: timedelta, patch_res):
+        """Device-resident: upload the latent once, run the whole U-Net on device
+        (skips, residual adds and the final concat all stay on device), download
+        once at the end. The encoder/decoder host glue never sees an intermediate."""
         B = x_torch.shape[0]
         all_enc_res, padded_outs = self.get_encoder_specs(patch_res)
 
@@ -431,15 +539,17 @@ class TtSwin3DTransformerBackbone:
         c_tt = ttnn.silu(c_tt)
         c_tt = self.time_lin2(c_tt)  # (B, embed_dim)
 
+        x = to_tt(x_torch, self.device)  # single host->device upload
+
         skips = []
         for i, layer in enumerate(self.encoder_layers):
-            x_torch, x_unscaled = layer(x_torch, c_tt, all_enc_res[i])
+            x, x_unscaled = layer(x, c_tt, all_enc_res[i])
             skips.append(x_unscaled)
         for i, layer in enumerate(self.decoder_layers):
             index = self.num_decoder_layers - i - 1
-            x_torch, _ = layer(x_torch, c_tt, all_enc_res[index], padded_outs[index - 1])
+            x, _ = layer(x, c_tt, all_enc_res[index], padded_outs[index - 1])
             if 0 < i < self.num_decoder_layers - 1:
-                x_torch = x_torch + skips[index - 1]
+                x = ttnn.add(x, skips[index - 1])
             elif i == self.num_decoder_layers - 1:
-                x_torch = torch.cat([x_torch, skips[0]], dim=-1)
-        return x_torch
+                x = ttnn.concat([x, skips[0]], dim=-1)
+        return from_tt(x)  # single device->host download
