@@ -89,6 +89,14 @@ Reproduced on this hardware with a freshly built `tt-metal` (`build_metal.sh` +
 | Swin3D backbone vs reference, real weights (`test_backbone_pcc`) | PCC = 0.99846 |
 | Full model, worst-of-9-variables forecast, bf16 (`test_full_model_pcc`) | PCC = 0.97892 |
 | Full model, worst-of-9-variables forecast, **bfp8_b** (`test_full_model_pcc_bfp8`) | PCC = 0.97945 |
+| LoRA folding vs reference & vs unfolded (`test_lora_fold_matches_unfolded`) | PCC = 1.00000 |
+| Trace rollout runner vs eager backbone (`test_trace_rollout_matches_eager`) | PCC = 1.00000 |
+| Perceiver resampler vs reference (`test_perceiver_resampler`) | PCC = 0.99979 |
+| Full model, TT backbone **+ TT Perceiver** (`test_full_model_pcc_with_perceiver`) | PCC = 0.95903 |
+
+Optimization latency (single Blackhole, may be shared) is reproducible with
+`python models/experimental/aurora/demo/benchmark.py`; see
+[BENCHMARKS.md](BENCHMARKS.md) for measured numbers and how to read them.
 
 Per-variable (bf16): `z` 0.99999, `t` 0.99976, `10v` 0.99831, `10u` 0.99722,
 `q` 0.99477, `u` 0.98673, `msl` 0.98682, `2t` 0.98392, `v` 0.97892.
