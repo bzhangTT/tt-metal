@@ -344,3 +344,83 @@ def test_trace_rollout_matches_eager(device, ref_model):
         f"({eager_s/traced_s:.2f}x)"
     )
     assert min(ps) > 0.999, f"traced rollout != eager: {min(ps)}"
+
+
+def test_perceiver_resampler(device):
+    """TT-NN PerceiverResampler vs the reference, random weights.
+
+    The encoder/decoder level (de)aggregation is a Flamingo-style Perceiver
+    cross-attention -- the device-portable part of the host tail at native
+    resolution. This validates the standalone port (cross-attn + MLP + post-res
+    LayerNorms, incl. the ln_k_q path) to ~1.0 with random weights.
+    """
+    from aurora.model.perceiver import PerceiverResampler
+
+    from models.experimental.aurora.tt.common import from_tt, to_tt
+    from models.experimental.aurora.tt.perceiver import TtPerceiverResampler
+
+    torch.manual_seed(0)
+    latent_dim, context_dim, depth, head_dim, num_heads = 128, 128, 2, 32, 4
+    ref = PerceiverResampler(
+        latent_dim=latent_dim,
+        context_dim=context_dim,
+        depth=depth,
+        head_dim=head_dim,
+        num_heads=num_heads,
+        ln_k_q=True,
+    ).eval()
+    # LayerNorms are ones/zeros by default; perturb so the LN affine is non-trivial.
+    with torch.no_grad():
+        for name, prm in ref.named_parameters():
+            if name.endswith(".weight") and prm.dim() == 1:  # LayerNorm weights
+                prm.normal_(1.0, 0.05)
+            elif name.endswith(".bias") and prm.dim() == 1:
+                prm.normal_(0.0, 0.05)
+    sd = {f"pr.{k}": v.detach().cpu().float() for k, v in ref.state_dict().items()}
+
+    B, L1, L2 = 2, 8, 13
+    latents = torch.randn(B, L1, latent_dim)
+    x = torch.randn(B, L2, context_dim)
+    with torch.no_grad():
+        ref_out = ref(latents, x)
+
+    tt = TtPerceiverResampler(
+        sd,
+        prefix="pr",
+        latent_dim=latent_dim,
+        context_dim=context_dim,
+        depth=depth,
+        head_dim=head_dim,
+        num_heads=num_heads,
+        ln_k_q=True,
+        device=device,
+    )
+    out = from_tt(tt(to_tt(latents, device), to_tt(x, device)))
+    p = pcc(ref_out, out)
+    print(f"\n[perceiver resampler] PCC={p:.5f}")
+    assert p > 0.99, f"perceiver resampler PCC too low: {p}"
+
+
+def test_full_model_pcc_with_perceiver(device, ref_model, ref_forecast):
+    """Full Aurora with the TT backbone AND the encoder/decoder level (de)aggregation
+    Perceiver cross-attention on device. Proves the on-device Perceiver works in the
+    real pipeline end-to-end (the win is at native resolution, where the
+    encoder/decoder are run over a ~720x1440 grid). This test runs last: it leaves
+    TT adapters attached to the module-scoped ref_model."""
+    from models.experimental.aurora.tt.model import attach_tt_perceiver
+
+    batch, ref_pred = ref_forecast
+
+    attach_tt_backbone(ref_model, device, use_lora=False)
+    attach_tt_perceiver(ref_model, device)
+    with torch.no_grad():
+        tt_pred = ref_model.forward(batch)
+
+    ps = []
+    for k in ref_pred.surf_vars:
+        ps.append(pcc(ref_pred.surf_vars[k], tt_pred.surf_vars[k]))
+    for k in ref_pred.atmos_vars:
+        ps.append(pcc(ref_pred.atmos_vars[k], tt_pred.atmos_vars[k]))
+    worst = min(ps)
+    print(f"\n[full model, TT backbone + TT perceiver] worst-variable PCC={worst:.5f}")
+    assert worst > 0.95, f"full-model (backbone+perceiver) PCC too low: {worst}"

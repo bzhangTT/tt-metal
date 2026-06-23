@@ -38,16 +38,24 @@ bit-for-bit identical; the dense linear algebra runs on the Tensix cores.
 ```
 models/experimental/aurora/
 ├── tt/
-│   ├── common.py   # TT-NN helpers: TtLinear, layer_norm, dtype/upload, pcc
-│   ├── swin.py     # TtWindowAttention, TtAdaptiveLayerNorm, TtMLP,
-│   │               # TtSwin3DTransformerBlock, TtPatchMerging/Splitting3D,
-│   │               # TtBasicLayer3D, TtSwin3DTransformerBackbone
-│   └── model.py    # attach_tt_backbone(): swaps the reference backbone for TT-NN
-├── tests/test_aurora.py   # PCC vs reference, REAL weights
+│   ├── common.py    # TT-NN helpers: TtLinear (+LoRA/TP), layer_norm, dtype/upload, pcc
+│   ├── swin.py      # TtWindowAttention, TtAdaptiveLayerNorm, TtMLP,
+│   │                # TtSwin3DTransformerBlock, TtPatchMerging/Splitting3D,
+│   │                # TtBasicLayer3D, TtSwin3DTransformerBackbone; optimization
+│   │                # flags (SDPA, LoRA fold, fidelity, TP, matmul core grid)
+│   ├── perceiver.py # TtPerceiverResampler: encoder/decoder level (de)aggregation
+│   ├── runner.py    # TtBackboneRunner: trace-captured rollout/serving runner
+│   └── model.py     # attach_tt_backbone() / attach_tt_perceiver(): swap reference
+│                    # modules for TT-NN in the hybrid model
+├── tests/test_aurora.py   # PCC vs reference, REAL weights (9 tests)
 ├── demo/demo.py           # end-to-end real-weight forecast on Blackhole
 ├── OPTIMIZATION.md         # deep dive on low-level TT optimizations
 └── README.md
 ```
+
+The backbone, the encoder/decoder Perceiver level (de)aggregation, and the
+multi-step rollout all run on device; see [OPTIMIZATION.md](OPTIMIZATION.md) for
+what is enabled by default vs. provided as a flagged hook.
 
 ## Prerequisites
 

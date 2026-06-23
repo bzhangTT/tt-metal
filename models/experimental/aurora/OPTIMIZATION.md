@@ -169,9 +169,19 @@ trace already captures essentially all the win for rollout.)
   step is fixed (inference). Validated by `test_lora_fold_matches_unfolded`:
   folded-vs-reference and folded-vs-unfolded PCC = 1.00000. The unfused runtime
   path is kept (`set_fold_lora(False)`) for a future per-step `"all"`-mode LoRA.
-- **Run encoder/decoder Perceiver attention on device too** once the backbone is
-  device-resident — they are the same `linear/SDPA/layer_norm` primitives, so
-  the host↔device boundary can move out to the Fourier/conv preprocessing only.
+- **Run encoder/decoder Perceiver attention on device too — [done].** The level
+  aggregation (`encoder.level_agg`) and de-aggregation (`decoder.level_decoder`)
+  are a Flamingo-style `PerceiverResampler` (cross-attention + GELU-MLP + post-res
+  layer-norms) — the same `linear/layer_norm` primitives as the backbone.
+  `tt/perceiver.py` ports it (`TtPerceiverResampler`) and `attach_tt_perceiver`
+  swaps both into the hybrid model, moving the host↔device boundary out to the
+  Fourier/conv/normalisation preprocessing only. Validated: standalone PCC 0.99979
+  (`test_perceiver_resampler`); full model with TT backbone **and** TT Perceiver
+  worst-variable PCC 0.95903 (`test_full_model_pcc_with_perceiver`). The end-to-end
+  win is at native 0.25° resolution, where the encoder/decoder run over a
+  ~720×1440 grid (the ~18 s host tail); at the small test resolution the
+  encoder/decoder are only ~10 ms each, so this is a correctness-proven capability
+  for the native-res serving path rather than a test-res speedup.
 - **Pin lat/lon/scale positional encodings.** They depend only on the grid, not
   the data, so compute once per grid and cache.
 
