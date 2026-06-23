@@ -78,6 +78,24 @@ def set_fold_lora(enabled: bool):
     _FOLD_LORA = enabled
 
 
+# Explicit core grid for the big QKV / proj / MLP matmuls. None -> ttnn
+# auto-selects the grid (the default, and what the validated configs use). At
+# Aurora's 0.25deg small/1.3B widths the backbone is data-movement / dispatch
+# bound -- HiFi2 helps but bfp8/LoFi did not, dispatch is killed by the trace
+# runner, and host round-trips by device-resident windowing -- so pinning the
+# matmul grid is not a measurable win there (and a shared single chip makes clean
+# matmul microbenchmarks impossible). It is the right lever for the compute-bound
+# high-res variants (patch_size=10, the 2048-wide deepest stages); set the full
+# device grid there and re-check PCC (the grid does not change the math).
+_MATMUL_CORE_GRID = None
+
+
+def set_matmul_core_grid(core_grid):
+    """Pin the QKV/proj/MLP matmuls to an explicit ttnn.CoreGrid (default: auto)."""
+    global _MATMUL_CORE_GRID
+    _MATMUL_CORE_GRID = core_grid
+
+
 # Tensor parallelism (Megatron-style col/row sharding of the MLP, with an
 # all_reduce per block) requires a healthy inter-chip Ethernet fabric. It is
 # OFF by default; enable only on a mesh whose fabric passes the collective
@@ -222,8 +240,8 @@ class TtMLP:
         self.kc = hifi_kernel_config()
 
     def __call__(self, x):
-        h = self.fc1(x, compute_kernel_config=self.kc)  # GELU fused
-        return self.fc2(h, compute_kernel_config=self.kc)
+        h = self.fc1(x, compute_kernel_config=self.kc, core_grid=_MATMUL_CORE_GRID)  # GELU fused
+        return self.fc2(h, compute_kernel_config=self.kc, core_grid=_MATMUL_CORE_GRID)
 
 
 class TtWindowAttention:
@@ -287,7 +305,7 @@ class TtWindowAttention:
     def __call__(self, x, mask_tt=None):
         # x: (nWB, N, D)
         nWB, N, D = x.shape
-        qkv = self.qkv(x, compute_kernel_config=self.kc)
+        qkv = self.qkv(x, compute_kernel_config=self.kc, core_grid=_MATMUL_CORE_GRID)
         if self.lora_runtime:
             qkv = ttnn.add(qkv, self._lora(x, self.qkv_A, self.qkv_B))
         # (nWB, N, 3D) -> (nWB, N, 3, nH, hd) -> split
@@ -330,7 +348,7 @@ class TtWindowAttention:
             out = ttnn.matmul(attn, v, compute_kernel_config=self.kc)  # (nWB, nH, N, hd)
         out = ttnn.permute(out, (0, 2, 1, 3))  # (nWB, N, nH, hd)
         out = ttnn.reshape(out, (nWB, N, D))
-        proj = self.proj(out, compute_kernel_config=self.kc)
+        proj = self.proj(out, compute_kernel_config=self.kc, core_grid=_MATMUL_CORE_GRID)
         if self.lora_runtime:
             proj = ttnn.add(proj, self._lora(out, self.proj_A, self.proj_B))
         return proj

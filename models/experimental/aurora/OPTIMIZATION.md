@@ -105,7 +105,7 @@ fast.
 A practical hybrid: tensor-parallel within a tray (fast local links),
 data/window-parallel across trays.
 
-## 5. Sharded L1 layouts + tuned matmul program configs
+## 5. Sharded L1 layouts + tuned matmul program configs — **[hook, off by default]**
 
 Keep activations in **L1 block-sharded** memory across the core grid instead of
 DRAM-interleaved, and pass explicit
@@ -114,6 +114,19 @@ DRAM-interleaved, and pass explicit
 the `(nW·B, N, D)` tensors and lets the QKV/MLP matmuls reuse weights resident
 in L1. Pad `N=144 → 160` (5×32) once so every tile is full. The deepest stages
 (`D=2048`, hidden `8192`) are where program-config tuning pays off most.
+
+**Status / finding.** A core-grid hook (`set_matmul_core_grid`, threaded into the
+QKV/proj/MLP matmuls) is wired but defaults to ttnn auto-selection — the grid does
+not change the math, so it is PCC-neutral. It is **not** enabled as a default
+because at the validated 0.25° small/1.3B widths the backbone is *data-movement /
+dispatch* bound, not compute bound: HiFi2 helped while bfp8/LoFi did not (§2/§4),
+device-resident windowing removed the host round-trips (§1), and the trace runner
+removed the per-step dispatch (§6). With compute off the critical path, pinning
+the matmul grid / L1-sharding the activations is the right lever only for the
+*compute-bound* high-res variants (`patch_size=10`, 2048-wide stages) and for
+genuinely concurrent multi-stream serving. (A clean matmul microbenchmark also
+isn't possible here — the single Blackhole chip is shared with other jobs.) Enable
+the hook there, size the program configs to the grid, and re-check PCC.
 
 ## 6. Trace capture for rollout/serving — the rollout multiplier — **[done]**
 
@@ -178,7 +191,9 @@ trace already captures essentially all the win for rollout.)
 6. Mesh sharding: window/data-parallel first, then tensor-parallel for 1.3B
    (Megatron col/row MLP sharding scaffolded in `TtLinear(tp=…)` /
    `set_tensor_parallel`, **off by default** — needs a working inter-chip fabric).
-7. L1 sharding + tuned matmul program configs on the deepest stages.
+7. L1 sharding + tuned matmul program configs on the deepest stages
+   (`set_matmul_core_grid` hook, **off by default** — compute-bound high-res
+   regime only; backbone is data-movement/dispatch bound at the validated scale).
 
 Validation is the same `pcc` test at every step: enable an optimization, re-run
 `tests/test_aurora.py`, keep it only if worst-variable PCC stays above the
