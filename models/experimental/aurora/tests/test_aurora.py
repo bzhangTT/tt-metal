@@ -46,7 +46,9 @@ def _make_batch(h=32, w=64, levels=(100, 250, 500, 850), t=2):
 
 @pytest.fixture(scope="module")
 def device():
-    dev = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
+    # trace_region_size supports the rollout trace runner
+    # (test_trace_rollout_matches_eager); harmless to the other tests.
+    dev = ttnn.open_mesh_device(ttnn.MeshShape(1, 1), trace_region_size=90_000_000)
     yield dev
     ttnn.close_mesh_device(dev)
 
@@ -280,3 +282,65 @@ def test_full_model_pcc_bfp8(device, ref_model, ref_forecast):
     worst = min(ps)
     print(f"\n[full model, bfp8_b weights] worst-variable PCC={worst:.5f}")
     assert worst > 0.95, f"bfp8_b full-model PCC too low: {worst}"
+
+
+def test_trace_rollout_matches_eager(device, ref_model):
+    """The trace-captured rollout runner reproduces the eager backbone exactly.
+
+    An autoregressive rollout replays the identical backbone graph each 6 h step;
+    TtBackboneRunner captures it once and replays with execute_trace. The replay
+    must match the eager device path bit-for-bit (it is the same graph), so PCC is
+    1.0 across multiple steps with different input latents.
+    """
+    import time
+
+    from models.experimental.aurora.tt.runner import TtBackboneRunner
+
+    ref_bb: Swin3DTransformerBackbone = ref_model.backbone
+    if isinstance(ref_bb, _TtBackboneAdapter):  # a prior test may have swapped it
+        ref_bb = ref_model._orig_backbone
+    sd = {f"bb.{k}": v.detach().cpu().float() for k, v in ref_bb.state_dict().items()}
+
+    patch_res = (4, 8, 16)
+    D = ref_bb.embed_dim
+    L = patch_res[0] * patch_res[1] * patch_res[2]
+    lead = timedelta(hours=6)
+    torch.manual_seed(3)
+    steps = [torch.randn(1, L, D) for _ in range(3)]
+
+    tt_bb = TtSwin3DTransformerBackbone(
+        sd,
+        prefix="bb",
+        embed_dim=D,
+        encoder_depths=tuple(len(l.blocks) for l in ref_bb.encoder_layers),
+        encoder_num_heads=tuple(l.blocks[0].num_heads for l in ref_bb.encoder_layers),
+        decoder_depths=tuple(len(l.blocks) for l in ref_bb.decoder_layers),
+        decoder_num_heads=tuple(l.blocks[0].num_heads for l in ref_bb.decoder_layers),
+        window_size=ref_bb.window_size,
+        device=device,
+        use_lora=False,
+    )
+
+    # Eager path + timing. Warm up once first so the timing excludes JIT build.
+    tt_bb(steps[0], lead, patch_res)
+    eager = []
+    t = time.perf_counter()
+    for x in steps:
+        eager.append(tt_bb(x, lead, patch_res))
+    eager_s = (time.perf_counter() - t) / len(steps)
+
+    # Traced rollout + timing.
+    runner = TtBackboneRunner(tt_bb).capture(steps[0], lead, patch_res)
+    runner.run(steps[0])  # prime
+    t = time.perf_counter()
+    traced = [runner.run(x) for x in steps]
+    traced_s = (time.perf_counter() - t) / len(steps)
+    runner.release()
+
+    ps = [pcc(e, tr) for e, tr in zip(eager, traced)]
+    print(
+        f"\n[trace rollout] per-step PCC={['%.5f' % p for p in ps]} "
+        f"eager={eager_s*1e3:.1f}ms/step traced={traced_s*1e3:.1f}ms/step "
+        f"({eager_s/traced_s:.2f}x)"
+    )
+    assert min(ps) > 0.999, f"traced rollout != eager: {min(ps)}"

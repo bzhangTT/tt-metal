@@ -115,21 +115,29 @@ the `(nW·B, N, D)` tensors and lets the QKV/MLP matmuls reuse weights resident
 in L1. Pad `N=144 → 160` (5×32) once so every tile is full. The deepest stages
 (`D=2048`, hidden `8192`) are where program-config tuning pays off most.
 
-## 6. Trace capture + multi-CQ for serving — the rollout multiplier
+## 6. Trace capture for rollout/serving — the rollout multiplier — **[done]**
 
 For *serving* (and any multi-step rollout) the host-side op-dispatch of ~48
-blocks per step is pure overhead that repeats every step. Capture the backbone
-once with `ttnn.begin_trace_capture` / `ttnn.end_trace_capture` and replay with
-`ttnn.execute_trace` each rollout step: dispatch cost collapses to a single
-trace launch, so a 10-day (40-step) forecast pays graph-build once.
+blocks per step is pure overhead that repeats every step. `TtBackboneRunner`
+(`tt/runner.py`) captures the backbone once with `ttnn.begin_trace_capture` /
+`ttnn.end_trace_capture` and replays it with `ttnn.execute_trace` each rollout
+step: dispatch cost collapses to a single trace launch, so a 10-day (40-step)
+forecast pays graph-build once. The conditioning `c_tt` and the device attention
+masks are constants and are baked into the trace (the mask cache is warmed before
+capture, so the captured region contains no host->device uploads). The input
+latent is copied into one persistent device buffer; copy and replay share a
+command queue, so the replay sees the fresh latent without cross-queue events.
+Validated by `test_trace_rollout_matches_eager`: traced == eager to PCC 1.00000
+across rollout steps, **~37x** per-step on the (dispatch-bound) small random
+backbone — the real-checkpoint speedup is smaller (more compute-bound) but the
+~48-block dispatch is eliminated either way.
 
-Use **two command queues**: CQ0 runs the traced backbone while CQ1 prefetches
-the next step's encoder output (and uploads the constant masks/weights, already
-resident). Double-buffer the encoder→backbone handoff so the device never
-stalls on host. Weights and the per-`(C,H,W,shift)` attention masks are
-constants across steps — upload once and cache the *device* tensors (the host
-mask builder is already `lru_cache`d; extend the cache to hold the uploaded
-`ttnn.Tensor`).
+**On two command queues:** a 2nd CQ prefetching the next input overlaps only
+when the next input is known ahead of time — i.e. *independent-batch* serving.
+An *autoregressive* rollout can't use it: step k+1's latent is a function of
+step k's output, so there is nothing to prefetch. (Aurora's per-step input upload
+is a tiny `(1, L, D)` tensor anyway, dominated by the backbone, so single-CQ
+trace already captures essentially all the win for rollout.)
 
 ## 7. Cheap but real wins
 
@@ -165,7 +173,8 @@ mask builder is already `lru_cache`d; extend the cache to hold the uploaded
 3. Device-resident windowing (remove per-block host transfers). **[done]**
 4. Matmul fidelity HiFi4→HiFi2 + fp32 accumulation (`set_compute_fidelity`),
    PCC-equal, ~1.25× on the matmuls. **[done, default]**
-5. Trace + 2-CQ backbone runner for rollout/serving.
+5. Trace-captured backbone runner for rollout/serving (`TtBackboneRunner`).
+   **[done]**
 6. Mesh sharding: window/data-parallel first, then tensor-parallel for 1.3B
    (Megatron col/row MLP sharding scaffolded in `TtLinear(tp=…)` /
    `set_tensor_parallel`, **off by default** — needs a working inter-chip fabric).

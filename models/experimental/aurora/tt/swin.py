@@ -604,22 +604,24 @@ class TtSwin3DTransformerBackbone:
         padded_outs.append((0, 0, 0))
         return all_res, padded_outs
 
-    def __call__(self, x_torch, lead_time: timedelta, patch_res):
-        """Device-resident: upload the latent once, run the whole U-Net on device
-        (skips, residual adds and the final concat all stay on device), download
-        once at the end. The encoder/decoder host glue never sees an intermediate."""
-        B = x_torch.shape[0]
-        all_enc_res, padded_outs = self.get_encoder_specs(patch_res)
-
+    def compute_conditioning(self, lead_time: timedelta, B, dtype=torch.float32):
+        """Lead-time -> SiLU(time_mlp) conditioning ``c_tt`` (B, embed_dim) on
+        device. Constant across an autoregressive rollout (same lead time), so the
+        rollout runner computes it once and treats it as a trace constant."""
         lead_hours = lead_time / timedelta(hours=1)
         lead_times = lead_hours * torch.ones(B, dtype=torch.float32)
-        c_torch = lead_time_expansion(lead_times, self.embed_dim).to(dtype=x_torch.dtype)
+        c_torch = lead_time_expansion(lead_times, self.embed_dim).to(dtype=dtype)
         c_tt = self.time_lin0(to_tt(c_torch, self.device))
         c_tt = ttnn.silu(c_tt)
-        c_tt = self.time_lin2(c_tt)  # (B, embed_dim)
+        return self.time_lin2(c_tt)  # (B, embed_dim)
 
-        x = to_tt(x_torch, self.device)  # single host->device upload
-
+    def forward_device(self, x, c_tt, patch_res):
+        """Device-in / device-out U-Net core. ``x``: (B, L, D) device tensor (TILE);
+        ``c_tt``: conditioning on device. All skips, residual adds and the final
+        concat stay on device. Pure device ops (host work is only Python shape math
+        and cache-hit mask lookups), so this is the region captured by the rollout
+        trace runner."""
+        all_enc_res, padded_outs = self.get_encoder_specs(patch_res)
         skips = []
         for i, layer in enumerate(self.encoder_layers):
             x, x_unscaled = layer(x, c_tt, all_enc_res[i])
@@ -631,4 +633,15 @@ class TtSwin3DTransformerBackbone:
                 x = ttnn.add(x, skips[index - 1])
             elif i == self.num_decoder_layers - 1:
                 x = ttnn.concat([x, skips[0]], dim=-1)
-        return from_tt(x)  # single device->host download
+        return x
+
+    def __call__(self, x_torch, lead_time: timedelta, patch_res):
+        """Device-resident: upload the latent once, run the whole U-Net on device,
+        download once at the end. The encoder/decoder host glue never sees an
+        intermediate. For multi-step rollout/serving use ``TtBackboneRunner``
+        (tt/runner.py), which traces this graph and replays it per step."""
+        B = x_torch.shape[0]
+        c_tt = self.compute_conditioning(lead_time, B, dtype=x_torch.dtype)
+        x = to_tt(x_torch, self.device)  # single host->device upload
+        out = self.forward_device(x, c_tt, patch_res)
+        return from_tt(out)  # single device->host download
