@@ -1,9 +1,10 @@
 # Repo Assist Memory — bzhangTT/tt-metal
 
 ## Last run
-- 2026-08-08 07:19 UTC (run 31245836095)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests).
-- No Monthly Activity issue found via search_issues (again) — recreated "[repo-assist] Monthly Activity 2026-08" (label automation) this run.
+- 2026-08-08 13:15 UTC (run 31259064509)
+- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
+- Monthly Activity issue: not found via list_issues/search_issues (even without state filter) - recreated
+  "[repo-assist] Monthly Activity 2026-08" (label automation) this run via create_issue.
 - No Task 1-7 actions possible (empty backlog: no issues, no PRs to triage/comment/fix/improve/nudge/welcome).
 
 ## Backlog cursor
@@ -13,8 +14,9 @@
 ## Notes
 - Repo continues to show no real issue/PR activity (fork with empty backlog). Continue checking each run
   in case it starts receiving real traffic from upstream sync or new contributors.
-- Prior runs (31069150472, 31087819797, 31111709382, 31158807713, 31210846848, 31234844691) also
-  created/claimed a Monthly Activity issue but it was absent on subsequent search_issues each time —
-  apparent non-persistence of created issues in this sandboxed/test environment, or repo state resets
-  between runs. Continue verifying via search_issues each run before assuming it exists, and recreate
-  if missing.
+- Prior runs (31069150472, 31087819797, 31111709382, 31158807713, 31210846848, 31234844691, 31245836095)
+  also created/claimed a Monthly Activity issue but it was absent on subsequent search_issues each time -
+  apparent non-persistence of created issues in this sandboxed/test environment (safe-outputs create_issue
+  writes may not be reflected in this repo/environment, or repo state resets between runs). Continue
+  verifying via list_issues/search_issues each run before assuming it exists, and recreate if missing.
+  Do not treat this as a real bug to fix - just a known quirk of this test environment.
