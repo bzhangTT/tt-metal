@@ -104,12 +104,17 @@ TrayID get_tray_id_for_chip(
     }
     if (!mobo_to_bus_ids.contains(mobo_name)) {
         auto bus_id = tt::tt_fabric::get_bus_id(cluster_desc, chip_id);
+        // An empty mobo_name means get_mobo_name() couldn't read /sys/class/dmi/id/board_name at
+        // all (e.g. containerized/virtualized CI hosts don't expose real DMI board data). That is
+        // an expected environment condition, not an unrecognized-but-real motherboard someone
+        // should add to mobo_to_bus_ids, so it isn't actionable and shouldn't warn.
+        //
         // All chips on a host share the same motherboard, so this fires once per chip in
         // get_asic_position()'s per-chip loop (run_local_discovery iterates chip_unique_ids).
         // Warn only once per distinct unknown motherboard name per process to avoid identical
         // repeated log spam, while still surfacing the actionable message at least once.
         static std::unordered_set<std::string> warned_mobo_names;
-        if (warned_mobo_names.insert(mobo_name).second) {
+        if (!mobo_name.empty() && warned_mobo_names.insert(mobo_name).second) {
             log_warning(
                 tt::LogAlways,
                 "Unknown motherboard '{}' for chip_id={} (bus_id=0x{:x}) — falling back to bus_id as tray_id. "
