@@ -36,7 +36,9 @@ void kernel_main() {
     constexpr uint32_t bcast_B = get_compile_time_arg_val(9);
     constexpr uint32_t MtKt = get_compile_time_arg_val(10);
 
-    constexpr auto in0_args = TensorAccessorArgs<11>();
+    // Only used below when IN0_SHARDED is not defined; unused (but still needs to occupy its
+    // compile-time-arg slot) when the in0 tensor is sharded.
+    [[maybe_unused]] constexpr auto in0_args = TensorAccessorArgs<11>();
 
     constexpr uint32_t dfb_id_in0 = get_named_compile_time_arg_val("cb_in0");
 

@@ -65,7 +65,9 @@ void kernel_main() {
     constexpr uint32_t dfb_id_out0 = get_named_compile_time_arg_val("cb_out");
 
     constexpr auto in1_args = TensorAccessorArgs<19>();
-    constexpr auto out_args = TensorAccessorArgs<in1_args.next_compile_time_args_offset()>();
+    // Used below when OUT_SHARDED is not defined, and to compute bias_args' offset when
+    // FUSE_BIAS is defined; unused when both OUT_SHARDED and !FUSE_BIAS hold.
+    [[maybe_unused]] constexpr auto out_args = TensorAccessorArgs<in1_args.next_compile_time_args_offset()>();
 #ifdef FUSE_BIAS
     // bias accessor CT args follow the output accessor
     constexpr auto bias_args = TensorAccessorArgs<out_args.next_compile_time_args_offset()>();
