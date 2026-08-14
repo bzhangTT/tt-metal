@@ -1,0 +1,6 @@
+{
+  "workflow": "sanity-tests",
+  "scanned_run_ids": ["31784103528"],
+  "sampled_jobs": ["94716223859", "94719000352", "94719000345", "94719049790"],
+  "last_scan_date": "2026-08-14"
+}
