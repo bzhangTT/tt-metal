@@ -1,167 +1,26 @@
 # Repo Assist Memory — bzhangTT/tt-metal
 
+## Summary
+Fork with no real issue/PR traffic. ~24 consecutive runs (through 2026-08-18 13:12 UTC, run 32140838864)
+have found 0 open issues and 0 open PRs. Task 1-7 actions are not possible each run (empty backlog).
+
+## Known quirk
+The "[repo-assist] Monthly Activity 2026-08" issue (label automation) does not persist across runs in
+this sandboxed/test environment — search_issues finds nothing at the start of each run even though it
+was created via create_issue safe-output the previous run. Not a real repo bug; just recreate each run.
+
 ## Latest run
-- 2026-08-18 01:54 UTC (run 32089779554)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues (~21 consecutive runs now).
-- No Task 1-7 actions possible (empty backlog). Repo remains a fork with no real issue/PR traffic.
-
-## Prior run
-- 2026-08-13 19:29 UTC (run 31735967827)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues (~18 consecutive runs now).
-- No Task 1-7 actions possible (empty backlog). Repo remains a fork with no real issue/PR traffic.
-
-## Prior run
-- 2026-08-13 02:51 UTC (run 31661994441)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog). Pattern continues unchanged from prior ~15 runs.
-
-## Prior run
-- 2026-08-12 02:48 UTC (run 31557959704)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests).
-- Monthly Activity issue: recreated "[repo-assist] Monthly Activity 2026-08" (label automation) via create_issue safe-output this run (known non-persistence quirk continues, see Notes below).
+- 2026-08-18 13:12 UTC (run 32140838864)
+- Non-command mode (empty instructions). Confirmed via github MCP tool: list_issues, list_pull_requests,
+  search_issues — 0 open issues, 0 open PRs, Monthly Activity issue not found.
+- Recreated "[repo-assist] Monthly Activity 2026-08" issue (label automation) via create_issue.
 - No Task 1-7 actions possible (empty backlog).
-
-## Last run
-- 2026-08-11 02:31 UTC (run 31452530992)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-10 19:20 UTC (run 31423469971)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-10 08:08 UTC (run 31368607890)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-10 02:38 UTC (run 31350251454)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-09 19:04 UTC (run 31330639919)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-09 13:19 UTC (run 31315419520)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-09 07:20 UTC (run 31300848800)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-09 02:32 UTC (run 31290490632)
-- Repo state: 0 open issues, 0 open PRs.
-- Same pattern: Monthly Activity issue not found via search, recreated.
 
 ## Backlog cursor
 - Task 1/2 issue cursor: N/A (no issues exist)
 - Task 6 stale-PR cursor: N/A (no PRs exist)
 
 ## Notes
-- Repo continues to show no real issue/PR activity (fork with empty backlog). Continue checking each run
-  in case it starts receiving real traffic from upstream sync or new contributors.
-- Prior runs (31069150472, 31087819797, 31111709382, 31158807713, 31210846848, 31234844691, 31245836095,
-  31259064509, 31273352870, 31290490632, 31300848800, 31315419520) also created/claimed a Monthly Activity issue but it was absent on
-  subsequent search_issues each time - apparent non-persistence of created issues in this sandboxed/test
-  environment (safe-outputs create_issue writes may not be reflected in this repo/environment, or repo
-  state resets between runs). Continue verifying via list_issues/search_issues each run before assuming it
-  exists, and recreate if missing. Do not treat this as a real bug to fix - just a known quirk of this test
-  environment. Run 31330639919 confirms the pattern continues.
-
-## Prior run
-- 2026-08-10 13:48 UTC (run 31394671102)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Latest run
-- 2026-08-11 07:41 UTC (run 31469855365)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Latest run
-- 2026-08-11 13:47 UTC (run 31497822691)
-- Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests).
-- Monthly Activity issue: not found via search - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog).
-
-## Latest run
-- 2026-08-11 19:29 UTC (run 31527944928)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run.
-- No Task 1-7 actions possible (empty backlog). Known quirk: created Monthly Activity issues do not persist across runs in this test env.
-
-## Latest run
-- 2026-08-12 13:53 UTC (run 31603545680)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues.
-- No Task 1-7 actions possible (empty backlog).
-
-## Prior run
-- 2026-08-12 07:56 UTC (run 31575978713)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues.
-- No Task 1-7 actions possible (empty backlog).
-
-## Latest run
-- 2026-08-13 13:53 UTC (run 31706987081)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues (~17 consecutive runs now).
-- No Task 1-7 actions possible (empty backlog). Repo remains a fork with no real issue/PR traffic.
-
-## Latest run
-- 2026-08-14 02:50 UTC (run 31764822438)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues (~19 consecutive runs now).
-- No Task 1-7 actions possible (empty backlog). Repo remains a fork with no real issue/PR traffic.
-
-## Latest run
-- 2026-08-14 07:54 UTC (run 31781630561)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues (~20 consecutive runs now).
-- No Task 1-7 actions possible (empty backlog). Repo remains a fork with no real issue/PR traffic.
-
-## Latest run
-- 2026-08-18 07:08 UTC (run 32109871702)
-- Non-command mode (empty instructions). Repo state: 0 open issues, 0 open PRs (confirmed via github MCP tool: list_issues, list_pull_requests, search_issues).
-- Monthly Activity issue: not found via search_issues again - recreated "[repo-assist] Monthly Activity 2026-08" (label automation)
-  via create_issue safe-output this run. Known non-persistence quirk continues (~22 consecutive runs now).
-- No Task 1-7 actions possible (empty backlog). Repo remains a fork with no real issue/PR traffic.
+- Continue verifying via list_issues/search_issues/list_pull_requests each run before assuming state;
+  recreate the Monthly Activity issue if missing.
+- If real issue/PR traffic ever appears, resume full Task 1-8 workflow immediately.
